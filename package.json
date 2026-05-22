@@ -1,0 +1,26 @@
+{
+  "name": "mech-pi",
+  "version": "0.1.0",
+  "description": "A pi extension package for mechanics-aware LaTeX paper development.",
+  "keywords": ["pi-package", "latex", "mechanics", "continuum-mechanics", "research"],
+  "type": "module",
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./extensions"],
+    "skills": ["./skills"],
+    "prompts": ["./prompts"]
+  },
+  "scripts": {
+    "demo": "node scripts/demo-summary.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}
