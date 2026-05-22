@@ -48,7 +48,15 @@ Find equations containing \eta and focus on the most important one.
 
 The focused view returns exact source, nearby prose, symbols/macros, and simple index warnings.
 
-## 5. Compile and preview
+## 5. Edit an equation with rendered preview
+
+```text
+/mecheqedit eq:mom_gas
+```
+
+Expected result: an overlay opens with a compiled/typeset equation preview above an editable source box. If running over SSH inside tmux, see `docs/terminal-images.md` for passthrough settings.
+
+## 6. Compile and preview
 
 ```text
 /mechcompile
@@ -61,7 +69,7 @@ Or ask naturally:
 Compile the paper. If it fails, summarize only the first real LaTeX error.
 ```
 
-## 6. Interrogate the development
+## 7. Interrogate the development
 
 ```text
 /mechquestions entropy production and reacting phase mass transfer
@@ -69,7 +77,7 @@ Compile the paper. If it fails, summarize only the first real LaTeX error.
 
 The agent should ask pointed mechanics questions instead of drifting into generic prose.
 
-## 7. Edit with the source of truth loop
+## 8. Edit with the source of truth loop
 
 ```text
 Add a short clarification after the entropy inequality distinguishing assumptions from constitutive restrictions. Then compile.
@@ -81,15 +89,16 @@ The intended loop is:
 ingest/focus -> discuss -> precise TeX edit -> compile -> preview -> repeat
 ```
 
-## 8. Demo recording outline
+## 9. Demo recording outline
 
 If recording a video/asciinema:
 
 1. Launch pi in the LaTeX repo with `-e /home/jfoster/Documents/mech-pi`.
 2. Run `/mechmap`.
 3. Ask: `focus the main entropy inequality and challenge the derivation`.
-4. Run `/mechcompile`.
-5. Run `/mechpreview`.
-6. Ask: `make a three-step plan to nudge this section toward truth`.
+4. Run `/mecheqedit eq:mom_gas` and show the rendered preview/editor.
+5. Run `/mechcompile`.
+6. Run `/mechpreview`.
+7. Ask: `make a three-step plan to nudge this section toward truth`.
 
 The key behavior to show: pi does not rely on stale chat memory; it reloads the TeX context and cites exact equation source.

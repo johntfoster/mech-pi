@@ -1,15 +1,17 @@
 # Roadmap
 
-## v0.1 morning MVP
+## v0.1 MVP
 
 - Pi package with extension, skill, and prompt resources.
 - Paper ingestion into `.mechpi/paper-map.json`.
 - Equation focus by label or contents.
+- Interactive equation editor with compiled/typeset preview.
 - `latexmk` compile loop.
 - PDF preview hook.
 - Symbol search.
 - Lightweight LaTeX/reference/citation/index checks.
 - Mechanics interrogation workflow.
+- Documentation for installation, commands, equation editing, terminal images, SSH, Kitty, and tmux.
 
 ## v0.2 notation intelligence
 
@@ -38,6 +40,6 @@
 
 - Equation browser.
 - Paper map tree.
-- Focus panel with source, rendered-ish equation, symbols, refs, and warnings.
+- Equation browser with source, rendered equation, symbols, refs, and warnings.
 - Question/interrogation wizard.
 - Compile/watch status widget.

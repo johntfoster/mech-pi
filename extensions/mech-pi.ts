@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, ExtensionEditorComponent } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { Text } from "@earendil-works/pi-tui";
+import { Container, Image, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import * as fs from "node:fs/promises";
 import * as fss from "node:fs";
@@ -42,6 +43,7 @@ const FocusParams = Type.Object({
   label: Type.Optional(Type.String({ description: "Equation label, e.g. eq:entropy" })),
   contains: Type.Optional(Type.String({ description: "Fallback text/macro to search for inside equations" })),
   contextLines: Type.Optional(Type.Number({ description: "Nearby context lines to include (default 6)" })),
+  edit: Type.Optional(Type.Boolean({ description: "Open an interactive terminal equation editor and save changes back to source (default false)" })),
 });
 
 const CompileParams = Type.Object({
@@ -204,9 +206,9 @@ async function writeMap(cwd: string, map: PaperMap) {
   await fs.writeFile(path.join(dir, "paper-map.json"), JSON.stringify(map, null, 2));
 }
 
-function run(cmd: string, args: string[], cwd: string, signal?: AbortSignal): Promise<{ code: number | null, stdout: string, stderr: string }> {
+function run(cmd: string, args: string[], cwd: string, signal?: AbortSignal, env?: NodeJS.ProcessEnv): Promise<{ code: number | null, stdout: string, stderr: string }> {
   return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { cwd, shell: false });
+    const p = spawn(cmd, args, { cwd, shell: false, env: env ? { ...process.env, ...env } : process.env });
     let stdout = "", stderr = "";
     p.stdout.on("data", d => stdout += d.toString());
     p.stderr.on("data", d => stderr += d.toString());
@@ -237,6 +239,108 @@ function indexProblems(tex: string): string[] {
     for (const [idx, n] of counts) if (n > 2) problems.push(`Index ${idx} appears ${n} times in expression chunk: ${chunk.trim().slice(0, 100)}`);
   }
   return problems;
+}
+
+function equationOnlyPreview(tex: string): string {
+  return tex
+    .replace(/\\begin\{[^}]+\}/g, "")
+    .replace(/\\end\{[^}]+\}/g, "")
+    .replace(/\\label\{[^}]+\}/g, "")
+    .split(/\r?\n/)
+    .map(l => l.trimEnd())
+    .filter(l => l.trim().length > 0)
+    .join("\n");
+}
+
+function stripDocumentClass(preamble: string): string {
+  return preamble.replace(/\\documentclass(?:\[[^\]]*\])?\{[^}]+\}\s*/, "");
+}
+
+async function rootPreamble(ctx: ExtensionContext): Promise<string> {
+  const map = await loadOrBuildMap(ctx);
+  const root = map.rootTex ?? "main.tex";
+  const rootText = await readText(path.join(ctx.cwd, root));
+  const beforeDoc = rootText.split(/\\begin\{document\}/)[0] ?? rootText;
+  return stripDocumentClass(beforeDoc);
+}
+
+async function renderEquationPng(ctx: ExtensionContext, e: EquationInfo): Promise<{ base64: string; log?: string }> {
+  const tempRoot = path.join(ctx.cwd, ".mechpi", "equation-render");
+  await fs.mkdir(tempRoot, { recursive: true });
+  const dir = await fs.mkdtemp(path.join(tempRoot, "eq-"));
+  const texPath = path.join(dir, "equation.tex");
+  const pdfPath = path.join(dir, "equation.pdf");
+  const pngPrefix = path.join(dir, "equation");
+  const pngPath = path.join(dir, "equation.png");
+  const preamble = await rootPreamble(ctx);
+  const document = `\\documentclass[border=6pt,varwidth]{standalone}
+${preamble}
+\\pagestyle{empty}
+\\begin{document}
+${e.tex}
+\\end{document}
+`;
+  await fs.writeFile(texPath, document, "utf8");
+  const env = { TEXINPUTS: `${ctx.cwd}//:${process.env.TEXINPUTS ?? ""}` };
+  const latex = await run("pdflatex", ["-halt-on-error", "-interaction=nonstopmode", "-output-directory", dir, texPath], ctx.cwd, undefined, env);
+  if (latex.code !== 0) throw new Error(`pdflatex failed while rendering equation:\n${(latex.stdout + latex.stderr).slice(-3000)}`);
+  const ppm = await run("pdftoppm", ["-singlefile", "-png", "-r", "220", pdfPath, pngPrefix], ctx.cwd);
+  if (ppm.code !== 0) throw new Error(`pdftoppm failed while rendering equation:\n${(ppm.stdout + ppm.stderr).slice(-2000)}`);
+  const base64 = (await fs.readFile(pngPath)).toString("base64");
+  fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+  return { base64 };
+}
+
+async function saveEquationEdit(ctx: ExtensionContext, e: EquationInfo, newTex: string): Promise<string> {
+  const abs = path.join(ctx.cwd, e.file);
+  const source = await readText(abs);
+  const first = source.indexOf(e.tex);
+  if (first < 0) throw new Error(`Could not find the original equation block in ${e.file}; run mech_ingest and try again.`);
+  if (source.indexOf(e.tex, first + e.tex.length) >= 0) throw new Error(`Equation source is not unique in ${e.file}; refusing automatic replacement.`);
+  await fs.writeFile(abs, source.slice(0, first) + newTex + source.slice(first + e.tex.length));
+  const map = await buildPaperMap(ctx.cwd);
+  await writeMap(ctx.cwd, map);
+  return `${e.file}:${e.lineStart}-${e.lineEnd}`;
+}
+
+async function openEquationEditor(ctx: ExtensionContext, e: EquationInfo): Promise<string | null> {
+  const title = `Edit ${e.label ?? "unlabeled equation"} (${e.file}:${e.lineStart}-${e.lineEnd})`;
+  if (!ctx.hasUI) return null;
+  let rendered: { base64: string } | null = null;
+  let renderError: string | null = null;
+  try { rendered = await renderEquationPng(ctx, e); }
+  catch (err) { renderError = err instanceof Error ? err.message : String(err); }
+  return await ctx.ui.custom<string | null>((tui, theme, keybindings, done) => {
+    const container = new Container();
+    container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+    container.addChild(new Text(theme.fg("accent", theme.bold(`Typeset LaTeX preview: ${e.label ?? "(unlabeled)"}`)), 1, 0));
+    if (rendered) {
+      container.addChild(new Image(rendered.base64, "image/png", { fallbackColor: (s: string) => theme.fg("muted", s) }, { maxWidthCells: 100, maxHeightCells: 16 }));
+    } else {
+      container.addChild(new Text(theme.fg("warning", "Could not render a typeset preview; falling back to source."), 1, 0));
+      container.addChild(new Text(theme.fg("dim", (renderError ?? "unknown render error").slice(0, 1200)), 1, 0));
+      container.addChild(new Text(equationOnlyPreview(e.tex) || e.tex, 1, 0));
+    }
+    container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+    container.addChild(new Spacer(1));
+    const editor = new ExtensionEditorComponent(
+      tui,
+      keybindings,
+      `${title}\nSave with Enter; newline with Shift+Enter; cancel with Esc/Ctrl+C; external vim/nvim via $EDITOR/$VISUAL shortcut.`,
+      e.tex,
+      value => done(value),
+      () => done(null),
+      { paddingX: 1 },
+    );
+    container.addChild(editor);
+    return {
+      get focused() { return editor.focused; },
+      set focused(v: boolean) { editor.focused = v; },
+      render: (width: number) => container.render(width),
+      invalidate: () => container.invalidate(),
+      handleInput: (data: string) => { editor.handleInput(data); tui.requestRender(); },
+    };
+  }, { overlay: true, overlayOptions: { width: "90%", maxHeight: "90%" } });
 }
 
 export default function mechPi(pi: ExtensionAPI) {
@@ -277,6 +381,15 @@ export default function mechPi(pi: ExtensionAPI) {
       if (matches.length === 0) return { content: [{ type: "text", text: "No matching equation found. Run mech_ingest if cache is stale." }], details: { matches: [] } };
       const e = matches[0];
       const probs = indexProblems(e.tex);
+      if (params.edit) {
+        const edited = await openEquationEditor(ctx, e);
+        if (edited === null) return { content: [{ type: "text", text: `Equation edit cancelled: ${e.label ?? "(unlabeled)"}` }], details: { equation: e, cancelled: true } };
+        if (edited !== e.tex) {
+          const where = await saveEquationEdit(ctx, e, edited);
+          return { content: [{ type: "text", text: `Saved equation edit at ${where}. Rebuilt .mechpi/paper-map.json.` }], details: { equation: e, saved: true } };
+        }
+        return { content: [{ type: "text", text: `No changes made to ${e.label ?? "(unlabeled equation)"}.` }], details: { equation: e, saved: false } };
+      }
       const text = `Equation ${e.label ?? "(unlabeled)"}\n${e.file}:${e.lineStart}-${e.lineEnd}\nEnvironment: ${e.env}\n\nLaTeX:\n${e.tex}\n\nNearby context:\n${e.nearby}\n\nSymbols/macros seen:\n${e.symbols.join(", ")}${probs.length ? `\n\nIndex warnings:\n${probs.join("\n")}` : ""}`;
       return { content: [{ type: "text", text }], details: { equation: e, indexWarnings: probs, otherMatches: matches.length - 1 } };
     }
@@ -349,6 +462,28 @@ export default function mechPi(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("mechmap", { description: "Ingest current LaTeX repo and show paper map summary", handler: async (args, ctx) => { const map = await buildPaperMap(ctx.cwd, args.trim() || undefined); await writeMap(ctx.cwd, map); ctx.ui.notify(summarizeMap(map), map.warnings.length ? "warning" : "info"); } });
+  pi.registerCommand("mecheqedit", {
+    description: "Open a focused terminal equation editor and save changes back to the TeX source. Usage: /mecheqedit eq:label or /mecheqedit contains:fragment",
+    handler: async (args, ctx) => {
+      const query = args.trim();
+      if (!query) return ctx.ui.notify("Usage: /mecheqedit eq:label or /mecheqedit contains:fragment", "warning");
+      const map = await loadOrBuildMap(ctx);
+      const matches = query.startsWith("contains:")
+        ? map.equations.filter(e => e.tex.includes(query.slice("contains:".length)))
+        : map.equations.filter(e => e.label === query);
+      if (matches.length === 0) return ctx.ui.notify("No matching equation found. Run /mechmap if cache is stale.", "warning");
+      const e = matches[0];
+      const edited = await openEquationEditor(ctx, e);
+      if (edited === null) return ctx.ui.notify("Equation edit cancelled", "info");
+      if (edited === e.tex) return ctx.ui.notify("No changes made", "info");
+      try {
+        const where = await saveEquationEdit(ctx, e, edited);
+        ctx.ui.notify(`Saved equation edit at ${where}; rebuilt .mechpi/paper-map.json`, "info");
+      } catch (err) {
+        ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
+      }
+    }
+  });
   pi.registerCommand("mechcompile", { description: "Run latexmk on the detected paper root", handler: async (_args, ctx) => { const map = await loadOrBuildMap(ctx); const root = map.rootTex; if (!root) return ctx.ui.notify("No root TeX file found", "error"); const r = await run("latexmk", ["-pdf", "-interaction=nonstopmode", root], ctx.cwd); ctx.ui.notify(r.code === 0 ? `Compile OK: ${root}` : `Compile failed: ${root}`, r.code === 0 ? "info" : "error"); } });
   pi.registerCommand("mechpreview", { description: "Open compiled PDF using MECHPI_PDF_VIEWER or xdg-open", handler: async (_args, ctx) => { const map = await loadOrBuildMap(ctx); const pdf = map.rootTex ? map.rootTex.replace(/\.tex$/, ".pdf") : "main.pdf"; spawn(process.env.MECHPI_PDF_VIEWER ?? "xdg-open", [path.resolve(ctx.cwd, pdf)], { detached: true, stdio: "ignore" }).unref(); ctx.ui.notify(`Opening ${pdf}`, "info"); } });
   pi.registerCommand("mechquestions", { description: "Ask the agent to interrogate the current mechanics development", handler: async (args, _ctx) => { pi.sendUserMessage(`Use the mechanics research companion mode. Ingest/focus on the TeX source as needed, then ask me pointed development questions about ${args || "the current paper"}. Prioritize assumptions, balance laws, thermodynamics, constitutive choices, notation conflicts, and missing derivation steps.`); } });
