@@ -1062,7 +1062,28 @@ function stableKittyImageId(key: string): number {
 
 const latexPreviewKittyImageIds = new Set<number>();
 const latexPreviewImagePayloads = new Map<number, { source: string; base64: string }>();
+let latexPreviewScrollSuppressed = false;
+let latexPreviewScrollSuppressTimer: ReturnType<typeof setTimeout> | null = null;
 const LATEX_PREVIEW_SCALE = Math.max(0.25, Math.min(1.5, Number.parseFloat(process.env.MECHPI_LATEX_PREVIEW_SCALE ?? "1.0") || 1.0));
+
+function suppressLatexPreviewImagesForScroll(tui?: TUI, idleMs = Number.parseInt(process.env.MECHPI_SCROLL_IMAGE_IDLE_MS ?? "2000", 10) || 2000): void {
+  if (!useTerminalLatexImages() || getCapabilities().images !== "kitty") return;
+  if (!latexPreviewScrollSuppressed) {
+    latexPreviewScrollSuppressed = true;
+    suppressAssistantLatexPreviewImages++;
+  }
+  process.stdout.write(deleteAllKittyImages());
+  if (latexPreviewScrollSuppressTimer) clearTimeout(latexPreviewScrollSuppressTimer);
+  latexPreviewScrollSuppressTimer = setTimeout(() => {
+    latexPreviewScrollSuppressTimer = null;
+    if (latexPreviewScrollSuppressed) {
+      latexPreviewScrollSuppressed = false;
+      suppressAssistantLatexPreviewImages = Math.max(0, suppressAssistantLatexPreviewImages - 1);
+    }
+    process.stdout.write(deleteAllKittyImages());
+    tui?.requestRender(true);
+  }, idleMs);
+}
 
 function scaledLatexPreviewWidth(width: number, reservedCells = 2): number {
   const available = Math.max(1, width - reservedCells);
@@ -1070,6 +1091,7 @@ function scaledLatexPreviewWidth(width: number, reservedCells = 2): number {
 }
 
 function renderAspectRatioPng(base64: string, width: number, fallbackColor: (s: string) => string, imageId?: number): string[] {
+  if (latexPreviewScrollSuppressed) return [imageId ? deleteKittyImage(imageId) : ""];
   const dimensions = getImageDimensions(base64, "image/png");
   if (!dimensions) return [fallbackColor(imageFallback("image/png"))];
   const result = renderImage(base64, dimensions, { maxWidthCells: width, imageId, moveCursor: false });
@@ -1485,7 +1507,19 @@ class PromptScreenCopyOverlay implements Focusable {
     return out;
   }
 
-  private close(): void { this.handle?.hide(); this.returnToPrompt(); }
+  private close(): void {
+    if (latexPreviewScrollSuppressTimer) {
+      clearTimeout(latexPreviewScrollSuppressTimer);
+      latexPreviewScrollSuppressTimer = null;
+    }
+    if (latexPreviewScrollSuppressed) {
+      latexPreviewScrollSuppressed = false;
+      suppressAssistantLatexPreviewImages = Math.max(0, suppressAssistantLatexPreviewImages - 1);
+      process.stdout.write(deleteAllKittyImages());
+    }
+    this.handle?.hide();
+    this.returnToPrompt();
+  }
   private lineText(lineNo: number): string {
     return this.lines[lineNo]?.text ?? "";
   }
@@ -1547,12 +1581,15 @@ class PromptScreenCopyOverlay implements Focusable {
     this.setFlatIndex(i);
   }
   private ensureVisible(): void {
+    const oldTopLine = this.topLine;
+    const oldColOffset = this.colOffset;
     const bodyHeight = Math.max(1, this.tui.terminal.rows - 1);
     if (this.cursorLine < this.topLine) this.topLine = this.cursorLine;
     if (this.cursorLine >= this.topLine + bodyHeight) this.topLine = this.cursorLine - bodyHeight + 1;
     this.topLine = Math.max(0, Math.min(this.topLine, Math.max(0, this.lines.length - bodyHeight)));
     if (this.cursorCol < this.colOffset) this.colOffset = this.cursorCol;
     if (this.cursorCol >= this.colOffset + this.lastWidth) this.colOffset = Math.max(0, this.cursorCol - this.lastWidth + 1);
+    if (this.topLine !== oldTopLine || this.colOffset !== oldColOffset) suppressLatexPreviewImagesForScroll(this.tui);
   }
   private toggleVisual(mode: "char" | "line"): void {
     if (this.visualAnchor && this.visualMode === mode) { this.visualAnchor = null; this.visualMode = null; this.status = "COPY"; return; }

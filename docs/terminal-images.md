@@ -67,6 +67,21 @@ kitty +kitten icat /path/to/image.png
 
 If `tmux source-file` reports that `allow-passthrough` is not an option, your tmux is too old. Upgrade tmux or run pi outside tmux for inline equation previews.
 
+## Scrolling inside pi when running in tmux
+
+Kitty graphics placements do not behave like normal scrollback in tmux copy-mode. For pi panes, prefer `mech-pi`'s internal copy/scroll mode instead of tmux's scrollback. Add a conditional tmux binding that passes prefix + `]` through to pi panes while preserving tmux's usual `paste-buffer` behavior elsewhere:
+
+```tmux
+# Detect pi/mech-pi in the active pane's process tree.
+bind-key ] if-shell "$HOME/.tmux/mech-pi-pane-active.sh #{pane_pid}" \
+  "send-keys C-a ]" \
+  "paste-buffer"
+```
+
+The helper script should return success when `#{pane_pid}` or one of its children is pi, `pi-coding-agent`, or `mech-pi`. With this in place, pressing prefix + `]` inside a pi pane opens pi's internal full-screen copy mode rather than tmux copy-mode.
+
+While internal copy/scroll mode changes its visible viewport, `mech-pi` deletes active Kitty image placements and suppresses inline image rendering. After scrolling is idle for `MECHPI_SCROLL_IMAGE_IDLE_MS` milliseconds (default `2000`), it forces a redraw so cached images are placed at their new terminal locations.
+
 ## Troubleshooting checklist
 
 1. Test `kitty +kitten icat image.png` outside tmux.
