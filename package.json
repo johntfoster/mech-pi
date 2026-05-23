@@ -20,6 +20,8 @@
   },
   "scripts": {
     "demo": "node scripts/demo-summary.mjs",
+    "postinstall": "node scripts/install-python-deps.mjs",
+    "install:python-deps": "node scripts/install-python-deps.mjs",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {

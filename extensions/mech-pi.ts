@@ -8,6 +8,9 @@ import * as fss from "node:fs";
 import * as path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
+
+const mechPiPackageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 interface EquationNumberInfo {
   label?: string;
@@ -492,6 +495,12 @@ function run(cmd: string, args: string[], cwd: string, signal?: AbortSignal, env
     p.on("close", code => resolve({ code, stdout, stderr }));
     signal?.addEventListener("abort", () => p.kill("SIGTERM"));
   });
+}
+
+function mechPiPythonCommand(): string {
+  if (process.env.MECHPI_PYTHON) return process.env.MECHPI_PYTHON;
+  const venvPython = path.join(mechPiPackageRoot, ".mechpi-python", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
+  return fss.existsSync(venvPython) ? venvPython : "python3";
 }
 
 function runWithInput(cmd: string, args: string[], input: string, cwd: string, signal?: AbortSignal, env?: NodeJS.ProcessEnv): Promise<{ code: number | null, stdout: string, stderr: string }> {
@@ -4253,8 +4262,9 @@ model = SentenceTransformer(model_name)
 emb = model.encode(texts, normalize_embeddings=True, show_progress_bar=False)
 print(json.dumps({"provider":"sentence-transformers", "model":model_name, "embeddings":emb.tolist()}))
 `;
-    const r = await runWithInput("python3", ["-c", py], JSON.stringify({ texts, model }), cwd, signal);
-    if (r.code !== 0) throw new Error(`sentence-transformers embedding failed. Install with 'python3 -m pip install sentence-transformers' or set MECHPI_EMBED_PROVIDER=openai/command. ${r.stderr || r.stdout}`);
+    const python = mechPiPythonCommand();
+    const r = await runWithInput(python, ["-c", py], JSON.stringify({ texts, model }), cwd, signal);
+    if (r.code !== 0) throw new Error(`sentence-transformers embedding failed using ${python}. Reinstall mech-pi to run its Python dependency installer, run 'python3 -m pip install sentence-transformers', set MECHPI_PYTHON to a Python with sentence-transformers, or set MECHPI_EMBED_PROVIDER=openai/command. ${r.stderr || r.stdout}`);
     return parseEmbeddingResponse(r.stdout, "sentence-transformers", model);
   }
   throw new Error(`Unknown MECHPI_EMBED_PROVIDER: ${provider}`);

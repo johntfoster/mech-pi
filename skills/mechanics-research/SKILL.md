@@ -1,3 +1,8 @@
+---
+name: mechanics-research
+description: Use when helping write, check, or develop continuum-mechanics, mixture-theory, thermodynamics, or applied-mechanics LaTeX papers. Emphasizes source-of-truth TeX inspection, equation-focused review, assumptions, balance laws, constitutive restrictions, and notation consistency.
+---
+
 # Mechanics Research Companion
 
 Use this skill when helping write or check a continuum-mechanics, mixture-theory, thermodynamics, or applied mechanics paper.
