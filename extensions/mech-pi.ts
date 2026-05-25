@@ -6552,7 +6552,8 @@ async function runMechAddCite(args: string, ctx: ExtensionContext): Promise<void
   ctx.ui.setStatus("mechaddcite", ctx.ui.theme.fg("warning", "searching citations"));
   try {
     const map = await loadOrBuildMap(ctx);
-    const local = mergeCitationCandidates((await loadBibEntries(ctx.cwd, map)).map(e => bibEntryToCandidate(e, prompt)).filter(c => c.score > 1.25)).slice(0, 5);
+    const preferredBibEntries = await loadPreferredCitationBibEntries(ctx, map);
+    const local = mergeCitationCandidates(preferredBibEntries.map(e => bibEntryToCandidate(e, prompt)).filter(c => c.score > 1.25)).slice(0, 5);
     const external = (await searchExternalCitations(prompt, ctx.signal)).slice(0, 10);
     const candidates = mergeCitationCandidates([...external, ...local]).slice(0, 12);
     if (!candidates.some(c => c.status === "manual")) candidates.push(googleScholarManualCandidate(prompt));
@@ -6560,7 +6561,7 @@ async function runMechAddCite(args: string, ctx: ExtensionContext): Promise<void
     if (candidates.filter(c => c.status !== "manual").length < 5) ctx.ui.notify(`Found only ${candidates.length - 1} non-manual candidates; included Google Scholar manual fallback rather than fabricating results.`, "warning");
     const chosen = await chooseCitationCandidates(ctx, candidates);
     if (!chosen || chosen.length === 0) return ctx.ui.notify("Citation insertion cancelled", "info");
-    const existingKeys = new Set((await loadBibEntries(ctx.cwd, map)).map(e => e.key));
+    const existingKeys = new Set(preferredBibEntries.map(e => e.key));
     const selected: CitationCandidate[] = [];
     for (const candidate of chosen) {
       if (candidate.status === "manual") {
