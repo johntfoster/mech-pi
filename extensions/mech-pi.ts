@@ -3002,6 +3002,7 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
       catch (err) { voice.notifyError(err); }
       return true;
     }
+    if (matchesKey(data, Key.escape) && activeVoice?.isRecording() && this.isVoiceDictating()) { activeVoice.stopNow({ cancel: true }); return true; }
     if (matchesKey(data, Key.enter) || matchesKey(data, Key.ctrl("s"))) {
       if (activeVoice?.isRecording() && this.isVoiceDictating()) activeVoice.stopNow({ submit: true });
       else this.submitPrompt();
