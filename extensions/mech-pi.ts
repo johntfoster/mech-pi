@@ -6593,6 +6593,7 @@ function envFlag(name: string, defaultValue = false): boolean {
 
 function voiceSpaceHoldEnabled(): boolean { return envFlag("MECHPI_VOICE_SPACE_HOLD", false); }
 function voskRealtimeEnabled(): boolean { return envFlag("MECHPI_VOSK_REALTIME", true); }
+function isVoiceToggleInput(data: string): boolean { return data === "\x00" || matchesKey(data, Key.ctrl("space")); }
 
 function pythonHasVosk(command: string): boolean {
   const r = spawnSync(command, ["-c", "import vosk"], { stdio: "ignore", env: mechRuntimeEnv() });
