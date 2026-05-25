@@ -7401,9 +7401,11 @@ export default function mechPi(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     refreshMechPiRcConfig(ctx.cwd);
-    rememberMechPaneSession(ctx.sessionManager.getSessionFile());
+    mechPaneState(ctx.cwd);
+    rememberMechPaneSession(ctx.cwd, ctx.sessionManager.getSessionFile());
     latexPreviewCwd = ctx.cwd;
     if (mechRagDisabled(ctx, Boolean(pi.getFlag("no-mech-rag")))) disableMechRetrieveTool(pi);
+    else enableMechRetrieveTool(pi);
     activeVoice = new VoiceInputController(ctx);
     if (/^(1|true|yes|on)$/i.test(mechEnv("MECHPI_WAKE_ON_START") ?? "") && mechEnv("MECHPI_WAKE_WORD_COMMAND")) {
       try { activeVoice.startWakeLoop(); } catch (err) { activeVoice.notifyError(err); }
