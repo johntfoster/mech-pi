@@ -6696,6 +6696,7 @@ function envFlag(name: string, defaultValue = false): boolean {
 function voiceSpaceHoldEnabled(): boolean { return envFlag("MECHPI_VOICE_SPACE_HOLD", false); }
 function voskRealtimeEnabled(): boolean { return envFlag("MECHPI_VOSK_REALTIME", true); }
 function isVoiceToggleInput(data: string): boolean { return data === "\x00" || matchesKey(data, Key.ctrl("space")); }
+function voiceRecordingStatus(): string { return "\x1b[5;31m●\x1b[0m voice recording"; }
 
 function pythonHasVosk(command: string): boolean {
   const r = spawnSync(command, ["-c", "import vosk"], { stdio: "ignore", env: mechRuntimeEnv() });
@@ -6770,7 +6771,7 @@ class VoiceInputController {
     this.audioPath = path.join(dir, "utterance.wav");
     const actual = this.materializeRecorder(spec, this.audioPath);
     this.recorderStderr = "";
-    this.ctx.ui.setStatus("voice", this.ctx.ui.theme.fg("accent", `● voice ${reason}`));
+    this.ctx.ui.setStatus("voice", voiceRecordingStatus());
     this.recorder = spawn(actual.cmd, actual.args, { cwd: this.ctx.cwd, stdio: ["ignore", "ignore", "pipe"] });
     this.recorder.stderr?.on("data", d => this.recorderStderr += d.toString());
     this.recorder.on("error", err => { this.recorder = null; this.notifyError(err); });
@@ -6826,7 +6827,7 @@ class VoiceInputController {
     if (modelName) sttArgs.push("--model-name", modelName);
     this.streamStt = spawn(python, sttArgs, { cwd: this.ctx.cwd, stdio: ["pipe", "pipe", "pipe"], env: mechRuntimeEnv() });
     this.streamRecorder = spawn(recorder.cmd, recorder.args, { cwd: this.ctx.cwd, stdio: ["ignore", "pipe", "pipe"], env: mechRuntimeEnv() });
-    this.ctx.ui.setStatus("voice", this.ctx.ui.theme.fg("accent", `● vosk ${reason}`));
+    this.ctx.ui.setStatus("voice", voiceRecordingStatus());
     this.streamRecorder.stdout?.pipe(this.streamStt.stdin!);
     this.streamRecorder.stderr?.on("data", d => this.streamStderr += d.toString());
     this.streamStt.stderr?.on("data", d => this.streamStderr += d.toString());
@@ -6853,7 +6854,7 @@ class VoiceInputController {
     try { event = JSON.parse(line); } catch { return; }
     if (event.type === "ready") {
       this.streamReady = true;
-      this.ctx.ui.setStatus("voice", this.ctx.ui.theme.fg("accent", "● vosk listening"));
+      this.ctx.ui.setStatus("voice", voiceRecordingStatus());
       return;
     }
     if (event.type === "error") {
