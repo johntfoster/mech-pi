@@ -3032,7 +3032,6 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
   private submitPrompt(): void {
     const promptText = (this.getExpandedText?.() ?? this.getText()).trim();
     if (promptText.length === 0) return;
-    if (this.voiceUsedForCurrentPrompt) markVoicePromptForCleanup(promptText);
     this.voiceUsedForCurrentPrompt = false;
     this.rememberPrompt(promptText);
     this.enterInsert();
@@ -7121,27 +7120,6 @@ async function runMechCompileCommand(args: string, ctx: ExtensionContext): Promi
 
 let activePromptEditor: MechPiModalPromptEditor | null = null;
 let activeVoice: VoiceInputController | null = null;
-const pendingVoicePromptFingerprints = new Set<string>();
-
-function voicePromptFingerprint(text: string): string {
-  return text.trim().replace(/\s+/g, " ");
-}
-
-function markVoicePromptForCleanup(text: string): void {
-  const fp = voicePromptFingerprint(text);
-  if (fp) pendingVoicePromptFingerprints.add(fp);
-}
-
-function consumeVoicePromptForCleanup(text: string): boolean {
-  const fp = voicePromptFingerprint(text);
-  if (!fp || !pendingVoicePromptFingerprints.has(fp)) return false;
-  pendingVoicePromptFingerprints.delete(fp);
-  return true;
-}
-
-function voiceCleanupPrompt(text: string): string {
-  return `The following user prompt was generated using realtime voice transcription, so it may contain homophones, missing punctuation, dropped words, or incorrect technical terms. First reinterpret and clean up the prompt internally before acting. If the intended request is materially ambiguous, ask a concise clarifying question instead of guessing. Otherwise, proceed directly with the cleaned-up request.\n\nDictated prompt:\n${text}`;
-}
 
 export default function mechPi(pi: ExtensionAPI) {
   installAssistantLatexPreviewRenderer();
@@ -7285,14 +7263,6 @@ export default function mechPi(pi: ExtensionAPI) {
 
   pi.on("agent_end", async () => {
     activePromptEditor?.returnToInsertAfterChat();
-  });
-
-  pi.on("input", async (event) => {
-    if (event.source === "extension") return { action: "continue" };
-    const text = event.text ?? "";
-    if (!consumeVoicePromptForCleanup(text)) return { action: "continue" };
-    if (/^\s*[!/]/.test(text)) return { action: "continue" };
-    return { action: "transform", text: voiceCleanupPrompt(text) };
   });
 
   pi.on("tool_call", async (event, ctx) => {
