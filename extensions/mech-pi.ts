@@ -2017,7 +2017,7 @@ abstract class MechPiModalTextEditor extends CustomEditor {
     return color(truncateToWidth(raw, width, ""));
   }
 
-  protected modeName(): string { return this.mode === "visualLine" ? "VISUAL LINE" : this.mode.toUpperCase(); }
+  protected modeName(): string { return this.status || (this.mode === "visualLine" ? "VISUAL LINE" : this.mode.toUpperCase()); }
 
   protected currentSourceLocation(): string {
     const line = (this.sourceLineStart ?? 1) + (this.editorState().cursorLine ?? 0);
@@ -3078,7 +3078,7 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
     this.voiceDictationActive = true;
     this.voiceDictationBaseText = this.getText();
     this.voiceDictationCursor = this.flatIndex();
-    this.enterNormal("VOICE");
+    this.enterNormal("VOICE recording");
     this.tui.requestRender();
   }
 
@@ -3091,7 +3091,7 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
     const prefix = before.length > 0 && spoken && !/\s$/.test(before) ? " " : "";
     const suffix = after.length > 0 && spoken && !/^\s/.test(after) ? " " : "";
     this.setTextPreserveCursor(`${before}${prefix}${spoken}${suffix}${after}`, before.length + prefix.length + spoken.length);
-    this.status = partial ? "VOICE …" : "VOICE";
+    this.status = partial ? "VOICE recording…" : "VOICE recording";
     this.tui.requestRender();
   }
 
@@ -3114,24 +3114,29 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
     const original = this.getText();
     if (!original.trim()) { this.voiceUsedForCurrentPrompt = false; return; }
     const seq = ++this.voiceRewriteSeq;
-    this.status = "VOICE cleanup…";
+    this.status = "VOICE rewriting prompt…";
+    ctx.ui.setStatus("voice", ctx.ui.theme.fg("warning", "● voice rewriting prompt"));
     this.tui.requestRender();
     try {
       const rewritten = await rewriteVoicePromptText(ctx, original);
       if (seq !== this.voiceRewriteSeq) return;
       if (this.getText() !== original) {
-        this.status = "VOICE cleanup skipped: edited";
+        this.status = "VOICE rewrite skipped: edited";
+        ctx.ui.setStatus("voice", undefined);
         this.tui.requestRender();
         return;
       }
       const cleaned = rewritten.trim();
-      if (cleaned && cleaned !== original.trim()) this.setTextPreserveCursor(cleaned, cleaned.length);
+      const changed = !!cleaned && cleaned !== original.trim();
+      if (changed) this.setTextPreserveCursor(cleaned, cleaned.length);
       this.voiceUsedForCurrentPrompt = false;
-      this.enterNormal("NORMAL");
+      this.enterNormal(changed ? "VOICE rewritten — edit or Enter to send" : "VOICE checked — edit or Enter to send");
+      ctx.ui.setStatus("voice", undefined);
       if (submitAfter) this.submitPrompt();
       else this.tui.requestRender();
     } catch (err) {
-      this.status = `VOICE cleanup failed: ${err instanceof Error ? err.message : String(err)}`;
+      this.status = `VOICE rewrite failed: ${err instanceof Error ? err.message : String(err)}`;
+      ctx.ui.setStatus("voice", undefined);
       this.tui.requestRender();
       if (submitAfter) this.submitPrompt();
     }
