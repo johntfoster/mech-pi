@@ -3473,7 +3473,7 @@ function parseMechEditArgs(raw: string): { query: string; inline: boolean } {
 
 function textHash(text: string): string { return createHash("sha1").update(text).digest("hex"); }
 
-async function openSourceFilePopupEditor(ctx: ExtensionContext, target: EditTarget): Promise<string | null> {
+async function openSourceFilePopupEditor(ctx: ExtensionContext, target: EditTarget, opts: { initialYankText?: string; helpSuffix?: string } = {}): Promise<string | null> {
   if (!ctx.hasUI) return null;
   const abs = path.resolve(ctx.cwd, target.file);
   const original = await readText(abs);
@@ -3504,7 +3504,8 @@ async function openSourceFilePopupEditor(ctx: ExtensionContext, target: EditTarg
     lineNumberStart: 1,
     lineNumberLabel: target.file,
     initialCursorLine: Math.max(0, target.line - 1),
-    help: "Inline manuscript editor. :w writes; :wq/Ctrl+S saves and closes; :<line> jumps to a source line; Ctrl+C/:q cancels.",
+    initialYankText: opts.initialYankText,
+    help: `Inline manuscript editor. :w writes; :wq/Ctrl+S saves and closes; :<line> jumps to a source line; Ctrl+C/:q cancels.${opts.helpSuffix ? ` ${opts.helpSuffix}` : ""}`,
     onWrite: async (text, setStatus) => {
       const where = await saveText(text, setStatus);
       setStatus(`Wrote ${where}; rebuilt .mechpi/paper-map.json.`);
