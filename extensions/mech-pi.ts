@@ -6700,6 +6700,105 @@ class VoiceInputController {
     setTimeout(() => this.recorder?.kill("SIGTERM"), 800);
   }
 
+  private startStreamingVosk(reason: string, options: { submitOnStop?: boolean } = {}): void {
+    const recorder = this.findStreamingRecorder();
+    const python = findVoskPython();
+    if (!recorder || !python) throw new Error("Vosk realtime needs a mic recorder and Python vosk. Install/use parecord or ffmpeg, and ensure /home/john/miniconda3/bin/python can import vosk.");
+    const script = path.join(mechPiPackageRoot, "scripts", "vosk-stream.py");
+    if (!fss.existsSync(script)) throw new Error(`Missing Vosk streaming helper: ${script}`);
+    activePromptEditor?.beginVoiceDictation();
+    this.streamCommitted = "";
+    this.streamStdoutBuffer = "";
+    this.streamStderr = "";
+    this.streamSubmitOnStop = options.submitOnStop === true;
+    this.streamCancelled = false;
+    this.streamReady = false;
+    const sttArgs = [script, "--lang", mechEnv("MECHPI_VOSK_LANG") ?? "en"];
+    const model = mechEnv("MECHPI_VOSK_MODEL");
+    const modelName = mechEnv("MECHPI_VOSK_MODEL_NAME");
+    if (model) sttArgs.push("--model", model);
+    if (modelName) sttArgs.push("--model-name", modelName);
+    this.streamStt = spawn(python, sttArgs, { cwd: this.ctx.cwd, stdio: ["pipe", "pipe", "pipe"], env: mechRuntimeEnv() });
+    this.streamRecorder = spawn(recorder.cmd, recorder.args, { cwd: this.ctx.cwd, stdio: ["ignore", "pipe", "pipe"], env: mechRuntimeEnv() });
+    this.ctx.ui.setStatus("voice", this.ctx.ui.theme.fg("accent", `● vosk ${reason}`));
+    this.streamRecorder.stdout?.pipe(this.streamStt.stdin!);
+    this.streamRecorder.stderr?.on("data", d => this.streamStderr += d.toString());
+    this.streamStt.stderr?.on("data", d => this.streamStderr += d.toString());
+    this.streamStt.stdout?.on("data", d => this.handleStreamingJson(d.toString()));
+    this.streamRecorder.on("error", err => this.finishStreamingVosk(err));
+    this.streamStt.on("error", err => this.finishStreamingVosk(err));
+    this.streamRecorder.on("close", () => { try { this.streamStt?.stdin?.end(); } catch {} });
+    this.streamStt.on("close", code => this.finishStreamingVosk(code && !this.streamCancelled ? new Error(`Vosk stream exited with ${code}: ${this.streamStderr.slice(-1200)}`) : undefined));
+  }
+
+  private handleStreamingJson(chunk: string): void {
+    this.streamStdoutBuffer += chunk;
+    let idx = this.streamStdoutBuffer.indexOf("\n");
+    while (idx >= 0) {
+      const line = this.streamStdoutBuffer.slice(0, idx).trim();
+      this.streamStdoutBuffer = this.streamStdoutBuffer.slice(idx + 1);
+      if (line) this.handleStreamingEvent(line);
+      idx = this.streamStdoutBuffer.indexOf("\n");
+    }
+  }
+
+  private handleStreamingEvent(line: string): void {
+    let event: any;
+    try { event = JSON.parse(line); } catch { return; }
+    if (event.type === "ready") {
+      this.streamReady = true;
+      this.ctx.ui.setStatus("voice", this.ctx.ui.theme.fg("accent", "● vosk listening"));
+      return;
+    }
+    if (event.type === "error") {
+      this.finishStreamingVosk(new Error(String(event.message ?? "Vosk streaming failed")));
+      return;
+    }
+    if (event.type === "partial") {
+      activePromptEditor?.updateVoiceDictation(this.streamCommitted, String(event.text ?? ""), false);
+      return;
+    }
+    if (event.type === "final") {
+      const text = String(event.text ?? "").trim();
+      if (text) this.streamCommitted = `${this.streamCommitted}${this.streamCommitted ? " " : ""}${text}`.trim();
+      activePromptEditor?.updateVoiceDictation(this.streamCommitted, "", true);
+      return;
+    }
+  }
+
+  private finishStreamingVosk(error?: unknown): void {
+    const hadStream = this.streamRecorder || this.streamStt;
+    this.streamRecorder?.kill("SIGTERM");
+    this.streamStt?.kill("SIGTERM");
+    this.streamRecorder = null;
+    this.streamStt = null;
+    if (!hadStream) return;
+    const submit = this.streamSubmitOnStop && !this.streamCancelled;
+    const cancel = this.streamCancelled;
+    this.streamSubmitOnStop = false;
+    this.streamCancelled = false;
+    this.streamReady = false;
+    this.ctx.ui.setStatus("voice", undefined);
+    if (error) {
+      activePromptEditor?.endVoiceDictation(false, true);
+      this.notifyError(error);
+      return;
+    }
+    activePromptEditor?.endVoiceDictation(submit, cancel);
+    if (this.wakeEnabled) setTimeout(() => this.spawnWakeCommand(), 250);
+  }
+
+  private findStreamingRecorder(): RecorderSpec | null {
+    const custom = mechEnv("MECHPI_STREAM_RECORD_COMMAND");
+    if (custom) return { cmd: "bash", args: ["-lc", custom], name: "MECHPI_STREAM_RECORD_COMMAND" };
+    if (commandExists("parecord")) return { cmd: "parecord", args: ["--channels=1", "--rate=16000", "--format=s16le", "--raw"], name: "parecord raw" };
+    if (commandExists("ffmpeg")) return { cmd: "ffmpeg", args: ["-hide_banner", "-loglevel", "error", "-f", "pulse", "-i", "default", "-ac", "1", "-ar", "16000", "-f", "s16le", "-"], name: "ffmpeg pulse raw" };
+    if (commandExists("arecord")) return { cmd: "arecord", args: ["-q", "-f", "S16_LE", "-r", "16000", "-c", "1", "-t", "raw"], name: "arecord raw" };
+    return null;
+  }
+
+  private hasStreamingTranscriber(): boolean { return voskRealtimeEnabled() && !!this.findStreamingRecorder() && !!findVoskPython(); }
+
   startWakeLoop(): void {
     const command = mechEnv("MECHPI_WAKE_WORD_COMMAND");
     if (!command) throw new Error("Set MECHPI_WAKE_WORD_COMMAND to a local command that exits 0 when it hears the wake word, e.g. an openWakeWord/Porcupine wrapper.");
