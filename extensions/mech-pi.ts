@@ -4413,6 +4413,15 @@ async function generateCitationSummaryWithMiniModel(ctx: ExtensionContext, c: Ci
 }
 
 async function inspectCitationCandidate(ctx: ExtensionContext, c: CitationCandidate, openWebOnNoPdf = true): Promise<string> {
+  const local = resolveCitationLocalFiles(ctx, c)[0];
+  if (local) {
+    if (openWebOnNoPdf) openLocalDocumentPath(ctx, local, c.localFile);
+    const text = await extractLocalCitationText(ctx, local);
+    c.referencePath = local;
+    c.notes = unique([...c.notes, `Using local BibTeX file field: ${local}`]);
+    c.summary = await generateCitationSummaryWithMiniModel(ctx, c, text || c.abstract || "", text ? "local file text" : "metadata/abstract");
+    return c.summary;
+  }
   const pdf = await downloadPdfToTmp(ctx, c);
   if (pdf) {
     const text = await extractPdfTextPreview(ctx.cwd, pdf);
@@ -4423,13 +4432,15 @@ async function inspectCitationCandidate(ctx: ExtensionContext, c: CitationCandid
   if (openWebOnNoPdf && url) openUrlExternal(url);
   const landing = await fetchLandingPageText(c, ctx.signal);
   c.summary = await generateCitationSummaryWithMiniModel(ctx, c, landing || c.abstract || "", landing ? "landing-page text/metadata" : "metadata/abstract");
-  c.notes = unique([...c.notes, url ? "PDF could not be downloaded automatically; opened landing page for inspection" : "PDF could not be downloaded automatically"]);
+  c.notes = unique([...c.notes, url ? "No local BibTeX file was available and PDF could not be downloaded automatically; opened landing page for inspection" : "No local BibTeX file was available and PDF could not be downloaded automatically"]);
   return c.summary;
 }
 
 async function moveCandidatePdfToReferences(ctx: ExtensionContext, c: CitationCandidate, key: string): Promise<{ stored?: string; note?: string }> {
+  const local = resolveCitationLocalFiles(ctx, c)[0];
+  if (local) { c.referencePath = local; return { stored: local, note: `using existing local BibTeX file field ${local}` }; }
   const pdf = c.tempPdfPath && fss.existsSync(c.tempPdfPath) ? c.tempPdfPath : await downloadPdfToTmp(ctx, c);
-  if (!pdf) return { note: "no downloadable PDF found" };
+  if (!pdf) return { note: "no local BibTeX file field and no downloadable PDF found" };
   const root = citationReferenceRoot();
   const year = c.year?.match(/\d{4}/)?.[0] ?? "undated";
   const author = safePathPart(c.authors[0]?.split(/\s+/).slice(-1)[0] ?? "unknown");
