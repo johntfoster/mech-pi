@@ -7332,7 +7332,7 @@ async function handleMechPaneCommand(args: string, ctx: ExtensionCommandContext)
       parentSession,
       withSession: async (nextCtx) => {
         rememberMechPaneSession(nextCtx.sessionManager.getSessionFile());
-        nextCtx.ui.notify(`Created ${mechPaneLabel()} (Ctrl-a n/p switches panes)`, "info");
+        nextCtx.ui.notify(`Created ${mechPaneLabel()} (Ctrl-a n/p switches panes; Ctrl-a 1..9 jumps directly)`, "info");
       },
     });
     if (result.cancelled) ctx.ui.notify("New pane cancelled", "info");
