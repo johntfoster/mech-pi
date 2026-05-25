@@ -3147,6 +3147,7 @@ type UniformPopupEditorOptions = {
   lineNumberLabel?: string;
   initialCursorLine?: number;
   initialCursorCol?: number;
+  initialYankText?: string;
 };
 
 class MechPiUniformPopupEditor extends MechPiModalTextEditor {
@@ -3168,7 +3169,11 @@ class MechPiUniformPopupEditor extends MechPiModalTextEditor {
       this.editorState().cursorCol = Math.max(0, Math.floor(opts.initialCursorCol ?? 0));
       this.clampCursor();
     }
-    if (opts.initialText.length > 0) this.enterNormal("NORMAL");
+    if (opts.initialYankText) {
+      this.yankToClipboard(opts.initialYankText);
+      this.status = `YANKED ${opts.initialYankText}`;
+    }
+    if (opts.initialText.length > 0) this.enterNormal(this.status.startsWith("YANKED") ? this.status : "NORMAL");
     else this.enterInsert();
     (this as any).disableSubmit = true;
     if (opts.autocompleteProvider) (this as any).setAutocompleteProvider?.(opts.autocompleteProvider);
