@@ -7234,6 +7234,14 @@ export default function mechPi(pi: ExtensionAPI) {
     activePromptEditor?.returnToInsertAfterChat();
   });
 
+  pi.on("input", async (event) => {
+    if (event.source === "extension") return { action: "continue" };
+    const text = event.text ?? "";
+    if (!consumeVoicePromptForCleanup(text)) return { action: "continue" };
+    if (/^\s*[!/]/.test(text)) return { action: "continue" };
+    return { action: "transform", text: voiceCleanupPrompt(text) };
+  });
+
   pi.on("tool_call", async (event, ctx) => {
     return await handleAgentMutationToolCall(event, ctx);
   });
