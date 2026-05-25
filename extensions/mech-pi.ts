@@ -7352,7 +7352,7 @@ async function handleMechPaneCommand(args: string, ctx: ExtensionCommandContext)
     const sessions = availableMechPaneSessions(ctx.cwd);
     const activeIndex = mechPaneActiveIndex(ctx.cwd);
     const ragDefault = mechPaneDefaultRagEnabled(ctx.cwd) ? "on" : "off";
-    ctx.ui.notify(`mech-pi panes: ${mechPaneLabel(ctx.cwd)} (new-pane /mechingest default: ${ragDefault})${sessions.length ? `\n${sessions.map((file, i) => `${i === activeIndex ? "*" : " "} ${i + 1}. ${file}`).join("\n")}` : ""}`, "info");
+    ctx.ui.notify(`mech-pi panes: ${mechPaneLabel(ctx.cwd)} (new-pane /mechrag default: ${ragDefault})${sessions.length ? `\n${sessions.map((file, i) => `${i === activeIndex ? "*" : " "} ${i + 1}. ${file}`).join("\n")}` : ""}`, "info");
     return;
   }
   const paneNumber = /^\d+$/.test(cmd) ? Number.parseInt(cmd, 10) : NaN;
