@@ -2953,6 +2953,7 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
   private voiceDictationActive = false;
   private voiceDictationBaseText = "";
   private voiceDictationCursor = 0;
+  private voiceUsedForCurrentPrompt = false;
 
   constructor(tui: TUI, theme: any, keybindings: any, promptHistoryFile?: string, initialHistory: string[] = []) {
     super(tui, theme, keybindings);
@@ -3030,6 +3031,8 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
   private submitPrompt(): void {
     const promptText = (this.getExpandedText?.() ?? this.getText()).trim();
     if (promptText.length === 0) return;
+    if (this.voiceUsedForCurrentPrompt) markVoicePromptForCleanup(promptText);
+    this.voiceUsedForCurrentPrompt = false;
     this.rememberPrompt(promptText);
     this.enterInsert();
     this.status = "Sending...";
@@ -3081,6 +3084,7 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
 
   updateVoiceDictation(committed: string, partial = "", _final = false): void {
     if (!this.voiceDictationActive) this.beginVoiceDictation();
+    if ((committed || partial).trim()) this.voiceUsedForCurrentPrompt = true;
     const spoken = `${committed}${committed && partial ? " " : ""}${partial}`.trim();
     const before = this.voiceDictationBaseText.slice(0, this.voiceDictationCursor);
     const after = this.voiceDictationBaseText.slice(this.voiceDictationCursor);
@@ -3109,6 +3113,7 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
     const current = this.getText();
     const prefix = current.length > 0 && !/\s$/.test(current) ? " " : "";
     this.insertTextAtCursor(`${prefix}${cleaned}`);
+    this.voiceUsedForCurrentPrompt = true;
     this.enterInsert();
     if (submit) this.submitPrompt();
     else this.tui.requestRender();
