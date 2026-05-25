@@ -2716,9 +2716,13 @@ abstract class MechPiModalTextEditor extends CustomEditor {
   protected handleFishAutocompleteKey(data: string): boolean {
     if (this.isAutocompleteOpen()) {
       if (matchesKey(data, Key.tab) && Date.now() < this.ignoreDuplicateTabUntil) { return true; }
-      if (matchesKey(data, Key.tab) && !this.fishAutocompleteExplicit) { (this as any).cancelAutocomplete?.(); void this.openFishAutocomplete(); return true; }
-      if (matchesKey(data, Key.tab) || matchesKey(data, Key.down)) { (this as any).autocompleteList?.handleInput("\x1b[B"); this.tui.requestRender(); return true; }
-      if (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.up)) { (this as any).autocompleteList?.handleInput("\x1b[A"); this.tui.requestRender(); return true; }
+      // Treat already-visible automatic completions the same as explicit fish
+      // completions: Tab/Down move the highlight and Enter accepts.  This is
+      // especially important for fuzzy slash-command matches such as /cite ->
+      // /mechaddcite, where the item does not prefix-match the typed text and
+      // reopening the pager on Tab made the row effectively non-selectable.
+      if (matchesKey(data, Key.tab) || matchesKey(data, Key.down)) { this.fishAutocompleteExplicit = true; (this as any).autocompleteList?.handleInput("\x1b[B"); this.tui.requestRender(); return true; }
+      if (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.up)) { this.fishAutocompleteExplicit = true; (this as any).autocompleteList?.handleInput("\x1b[A"); this.tui.requestRender(); return true; }
       if (this.isEnterInput(data)) {
         // Never let Enter fall through to prompt submission while a completion
         // menu is open. It accepts the highlighted completion, closes the menu,
