@@ -6886,7 +6886,12 @@ class VoiceInputController {
       this.notifyError(error);
       return;
     }
-    activePromptEditor?.endVoiceDictation(submit, cancel);
+    activePromptEditor?.endVoiceDictation(false, cancel);
+    if (!cancel && activePromptEditor?.hasVoiceGeneratedPrompt()) {
+      void activePromptEditor.rewriteVoicePrompt(this.ctx, submit).catch(err => activePromptEditor?.insertVoiceText(``));
+    } else if (submit) {
+      activePromptEditor?.endVoiceDictation(true, false);
+    }
     if (this.wakeEnabled) setTimeout(() => this.spawnWakeCommand(), 250);
   }
 
