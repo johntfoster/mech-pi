@@ -21,6 +21,7 @@ Default typing mode. After commands, dialogs, and assistant responses return foc
 - `Ctrl-a`: start a tmux-like prefix; the next key must arrive within 2 seconds
 - `Ctrl-a` then `c`: create a new mech-pi logical pane
 - `Ctrl-a` then `n` / `p`: switch to next/previous mech-pi logical pane
+- `Ctrl-a` then `1` ... `9`: jump directly to that numbered mech-pi logical pane
 - `Ctrl-a` then `]`: enter full-screen copy mode
 
 ### NORMAL mode
@@ -46,6 +47,7 @@ Vim-style prompt editing.
 - `Ctrl-a`: start a tmux-like prefix; the next key must arrive within 2 seconds
 - `Ctrl-a` then `c`: create a new mech-pi logical pane
 - `Ctrl-a` then `n` / `p`: switch to next/previous mech-pi logical pane
+- `Ctrl-a` then `1` ... `9`: jump directly to that numbered mech-pi logical pane
 - `Ctrl-a` then `]`: enter full-screen copy mode
 
 ### VISUAL / VISUAL LINE mode in the prompt
@@ -88,7 +90,7 @@ Use `Ctrl-a` then `]` from the prompt to leave the prompt and enter a full-scree
 
 The key sequence is prefix-style: press `Ctrl-a`, release it, then press the command key within 2 seconds. If your terminal batches the keys as `Ctrl-a]`, `Ctrl-a c`, `Ctrl-a n`, or similar, that is also handled. If you keep holding Ctrl and send `Ctrl-]`, that is handled too.
 
-Prompt prefix commands are `c` for a new mech-pi logical pane, `n`/`p` for next/previous pane, and `]` for full-screen copy mode. Logical panes are backed by pi session files and are switched in-place rather than drawn as simultaneous splits.
+Prompt prefix commands are `c` for a new mech-pi logical pane, `n`/`p` for next/previous pane, `1`...`9` for direct pane selection, and `]` for full-screen copy mode. Logical panes are backed by pi session files and are switched in-place rather than drawn as simultaneous splits.
 
 ### COPY mode
 
