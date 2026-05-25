@@ -253,9 +253,11 @@ Opens the compiled PDF.
 - `MECHPI_INGEST_PREFERRED_PATHS` / `MECHPI_PREFERRED_PATHS` — path-list of directories to search before asking about a broad `$HOME` search; defaults to `~/Downloads` and `~/Documents/References`.
 - `MECHPI_PREFERRED_SEARCH_LIMIT` / `MECHPI_PREFERRED_SEARCH_NAME_LIMIT` — preferred-path search limits; defaults to 10000 and 5000.
 - `MECHPI_REFERENCES_PATH` / `MECHPI_REFERENCE_PATH` — destination root for PDFs selected through `/mechaddcite`; defaults to `~/Documents/References`.
-- `MECHPI_MINI_MODEL` — default fast model for small mech-pi tasks such as summaries and auto-commit messages; defaults to `openai/gpt-4o-mini`.
-- `MECHPI_SUMMARY_MODEL` — override mini model used for `/mechaddcite` citation/PDF summaries.
-- `MECHPI_COMMIT_MODEL` — override mini model used for generated git commit messages.
+- `MECHPI_SUMMARY_MODEL` — model used for `/mechaddcite` citation/PDF summaries, in the same `provider/model` style as `MECHPI_COMMIT_MODEL`; defaults to `openai/gpt-5.4`.
+- `MECHPI_SUMMARY_SERVICE_TIER` — OpenAI/Azure fast serving tier for summaries; defaults to `priority`.
+- `MECHPI_SUMMARY_MAX_TOKENS` — summary response token cap; defaults to `700`.
+- `MECHPI_COMMIT_MODEL` — model used for generated git commit messages; defaults to `MECHPI_MINI_MODEL` then `openai/gpt-4o-mini`.
+- `MECHPI_MINI_MODEL` — fallback fast model for commit messages and other small tasks; defaults to `openai/gpt-4o-mini`.
 - `MECHPI_AUTO_RAG=1` / `MECHPI_AUTO_RETRIEVE=1` — opt in to automatic per-prompt retrieval injection from `.mechpi/ingest/vector-store.json`; off by default so retrieval normally happens only when `mech_retrieve` is called.
 - `BROWSER` — browser command for the Google Scholar manual fallback and `/mechaddcite` web fallback when no PDF can be downloaded; defaults to `xdg-open`.
 - `MECHPI_PROMPT_HISTORY_LIMIT` — number of persistent prompts to keep in `.mechpi/prompt-history.json`; defaults to 100.
