@@ -7505,8 +7505,12 @@ export default function mechPi(pi: ExtensionAPI) {
         const ingestMatch = before.match(/^\/mechingest(?:\s+(.*))?$/);
         if (ingestMatch) {
           const query = ingestMatch[1] ?? "";
-          if (!query.trim()) return null;
-          const items = mechIngestAutocompleteItems(await getMechIngestItems(), query);
+          const modeItems = ["status", "on", "off", "toggle"]
+            .filter(mode => !query.trim() || mode.startsWith(query.trim().toLowerCase()))
+            .map(mode => ({ value: `/mechingest ${mode}`, label: mode, description: "[mode] toggle local ingest retrieval" }));
+          if (!query.trim()) return { items: modeItems, prefix: before };
+          const ingestItems = mechIngestAutocompleteItems(await getMechIngestItems(), query);
+          const items = [...modeItems, ...ingestItems].slice(0, 12);
           return items.length ? { items, prefix: before } : null;
         }
         if (before.startsWith("/") && !before.includes(" ")) {
