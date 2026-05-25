@@ -3849,6 +3849,23 @@ async function summaryModel(ctx: ExtensionContext): Promise<any | undefined> {
   return await configuredModelFromSpec(ctx, mechEnv("MECHPI_SUMMARY_MODEL") ?? "openai/gpt-5.4");
 }
 
+async function voiceRewriteModel(ctx: ExtensionContext): Promise<any | undefined> {
+  return await configuredModelFromSpec(ctx, mechEnv("MECHPI_VOICE_REWRITE_MODEL") ?? mechEnv("MECHPI_MINI_MODEL") ?? "openai/gpt-4o-mini");
+}
+
+async function rewriteVoicePromptText(ctx: ExtensionContext, text: string): Promise<string> {
+  const model = await voiceRewriteModel(ctx);
+  if (!model) return text;
+  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+  if (!auth.ok || !auth.apiKey) return text;
+  const msg: Message = { role: "user", timestamp: Date.now(), content: [{ type: "text", text }] };
+  const r = await complete(model, {
+    systemPrompt: "You are a fast dictation cleanup pass for a coding/research agent prompt. The user prompt came from realtime speech-to-text and may contain homophones, missing punctuation, duplicated fragments, or wrong technical terms. Rewrite the entire prompt into the user's intended typed prompt. Preserve meaning, specificity, filenames, commands, math notation, and technical terms when clear. Do not answer the prompt. Do not add explanations, quotes, markdown fences, or preambles. Output only the cleaned prompt. If the transcript is already clean, output it unchanged.",
+    messages: [msg],
+  }, { apiKey: auth.apiKey, headers: auth.headers, signal: ctx.signal, reasoning: "off", reasoningSummary: null, maxTokens: 1200, temperature: 0 });
+  return r.content.filter((x): x is { type: "text"; text: string } => x.type === "text").map(x => x.text).join("\n").trim() || text;
+}
+
 function fallbackCommitMessage(reason: string, files: string[]): string {
   const base = reason.replace(/\s+/g, " ").trim().replace(/[.]+$/g, "");
   const scope = files.length === 1 ? path.basename(files[0]) : `${files.length} files`;
