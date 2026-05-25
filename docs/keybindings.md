@@ -19,7 +19,7 @@ Default typing mode. After commands, dialogs, and assistant responses return foc
 - In mech-pi fuzzy completions (`/mechedit`, `/mecheqedit`, `/mechciteedit`, `/mechgotocite`, `/mechingest`), matches appear below the prompt with the best match highlighted; `Tab`/`Down` and `Shift-Tab`/`Up` move the highlight, and `Enter` accepts the highlighted match and sends the command.
 - optional push-to-talk: set `MECHPI_VOICE_SPACE_HOLD=1`, then hold `Space` on an empty prompt; release `Space` to stop after a short grace period
 - `Ctrl-a`: start a tmux-like prefix; the next key must arrive within 2 seconds
-- `Ctrl-a` then `c`: create a new mech-pi logical pane
+- `Ctrl-a` then `c`: create pane 2, pane 3, etc. after the current session/pane 1
 - `Ctrl-a` then `n` / `p`: switch to next/previous mech-pi logical pane
 - `Ctrl-a` then `1` ... `9`: jump directly to that numbered mech-pi logical pane
 - `Ctrl-a` then `]`: enter full-screen copy mode
@@ -45,7 +45,7 @@ Vim-style prompt editing.
 - `p`, `P`: paste after/before
 - `u`: undo
 - `Ctrl-a`: start a tmux-like prefix; the next key must arrive within 2 seconds
-- `Ctrl-a` then `c`: create a new mech-pi logical pane
+- `Ctrl-a` then `c`: create pane 2, pane 3, etc. after the current session/pane 1
 - `Ctrl-a` then `n` / `p`: switch to next/previous mech-pi logical pane
 - `Ctrl-a` then `1` ... `9`: jump directly to that numbered mech-pi logical pane
 - `Ctrl-a` then `]`: enter full-screen copy mode
