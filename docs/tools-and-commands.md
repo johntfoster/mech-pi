@@ -265,7 +265,7 @@ Opens the compiled PDF.
 - `MECHPI_COMMIT_MODEL` — model used for generated git commit messages; defaults to `MECHPI_MINI_MODEL` then `openai/gpt-4o-mini`.
 - `MECHPI_MINI_MODEL` — fallback fast model for commit messages and other small tasks; defaults to `openai/gpt-4o-mini`.
 - `MECHPI_AUTO_RAG=1` / `MECHPI_AUTO_RETRIEVE=1` — opt in to automatic per-prompt retrieval injection from `.mechpi/ingest/vector-store.json`; off by default so retrieval normally happens only when `mech_retrieve` is called.
-- `MECHPI_NO_RAG=1` / `MECHPI_DISABLE_RAG=1` / `MECHPI_RAG=0` — fully disable mech-pi local ingest-store retrieval for the session, matching `/new --no-mech-rag` behavior for startup sessions.
+- `MECHPI_NO_RAG=1` / `MECHPI_DISABLE_RAG=1` / `MECHPI_RAG=0` — fully disable mech-pi local ingest-store retrieval for the startup session, like `/mechingest off` but from the shell.
 - `BROWSER` — browser command for the Google Scholar manual fallback and `/mechaddcite` web fallback when no PDF can be downloaded; defaults to `xdg-open`.
 - `MECHPI_PROMPT_HISTORY_LIMIT` — number of persistent prompts to keep in `.mechpi/prompt-history.json`; defaults to 100.
 - `MECHPI_PREVIEW_MAX_QUALITY=1` — experimental maximum-quality preview mode. It raises inline LaTeX DPI to 2400 and makes equation-editor adaptive rendering target much larger rasters. This is slower and can create large terminal image payloads, but is useful for comparing sharpness.
