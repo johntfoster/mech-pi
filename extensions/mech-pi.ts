@@ -3134,7 +3134,7 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
 
   protected override handleCtrlAPrefixCommand(ch: string | undefined, data: string): boolean {
     if (super.handleCtrlAPrefixCommand(ch, data)) return true;
-    const command = ch === "c" ? "/mechpane new" : ch === "n" ? "/mechpane next" : ch === "p" ? "/mechpane prev" : "";
+    const command = ch === "c" ? "/mechpane new" : ch === "n" ? "/mechpane next" : ch === "p" ? "/mechpane prev" : /^[1-9]$/.test(ch ?? "") ? `/mechpane ${ch}` : "";
     if (!command) return false;
     this.status = `PREFIX ${ch}`;
     this.enterInsert();
