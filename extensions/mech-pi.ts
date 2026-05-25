@@ -6797,7 +6797,7 @@ async function retrieveMechIngestContext(cwd: string, prompt: string, options: M
   return result.hits.length ? formatMechIngestRetrieval(result, options) : "";
 }
 
-async function runMechIngest(args: string, ctx: ExtensionContext): Promise<void> {
+async function runMechIngest(args: string, ctx: ExtensionContext): Promise<boolean> {
   const allItems = await discoverMechIngestItems(ctx);
   const query = args.trim();
   const items = query ? allItems : allItems.filter(item => item.type === "bib");
@@ -6808,7 +6808,7 @@ async function runMechIngest(args: string, ctx: ExtensionContext): Promise<void>
     (tui, theme, _kb, done) => opaquePopup(new MechIngestPicker(ctx, tui, theme, items, query, manifest, layer, done), theme),
     { overlay: true, overlayOptions: { width: "90%", maxHeight: "85%", anchor: "center" }, onHandle: (handle: OverlayHandle) => { pickerHandle = handle; } },
   );
-  if (selection === null) return ctx.ui.notify("mechingest cancelled", "info");
+  if (selection === null) { ctx.ui.notify("mechingest cancelled", "info"); return false; }
   const selected = selection.ids;
   const showProgress: MechIngestProgress = (fraction, message) => {
     ctx.ui.setStatus("mechingest", ctx.ui.theme.fg("warning", `${mechIngestProgressBar(fraction)} ${message}`));
@@ -6833,11 +6833,14 @@ async function runMechIngest(args: string, ctx: ExtensionContext): Promise<void>
     const ok = next.sources.filter(s => s.status === "ok").length;
     const missing = next.sources.filter(s => s.status !== "ok");
     const agentsNote = agentsStatus === "unchanged" ? "" : ` AGENTS.md ${agentsStatus} with vector-store retrieval guidance.`;
+    setMechPaneDefaultRag(ctx.cwd, true);
     ctx.ui.setStatus("mechingest", undefined);
     ctx.ui.notify(`Ingested ${ok} source(s); ${missing.length} missing/error. Vector store rebuilt in .mechpi/ingest/.${agentsNote}${missing.length ? `\n\n${missing.map(s => `- ${s.label}: ${s.status}${s.note ? ` (${s.note})` : ""}`).join("\n")}` : ""}`, missing.length ? "warning" : "info");
+    return true;
   } catch (err) {
     ctx.ui.setStatus("mechingest", undefined);
     ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
+    return false;
   }
 }
 
