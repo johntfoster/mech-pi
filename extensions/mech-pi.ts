@@ -7164,11 +7164,13 @@ let activePromptEditor: MechPiModalPromptEditor | null = null;
 let activeVoice: VoiceInputController | null = null;
 
 export default function mechPi(pi: ExtensionAPI) {
+  pi.registerFlag("no-mech-rag", { description: "Disable mech-pi retrieval from .mechpi/ingest/vector-store.json for this session", type: "boolean", default: false });
   installAssistantLatexPreviewRenderer();
 
   pi.on("session_start", async (_event, ctx) => {
     refreshMechPiRcConfig(ctx.cwd);
     latexPreviewCwd = ctx.cwd;
+    if (mechRagDisabled(ctx, Boolean(pi.getFlag("no-mech-rag")))) disableMechRetrieveTool(pi);
     activeVoice = new VoiceInputController(ctx);
     if (/^(1|true|yes|on)$/i.test(mechEnv("MECHPI_WAKE_ON_START") ?? "") && mechEnv("MECHPI_WAKE_WORD_COMMAND")) {
       try { activeVoice.startWakeLoop(); } catch (err) { activeVoice.notifyError(err); }
