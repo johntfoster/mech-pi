@@ -3571,6 +3571,8 @@ type CitationCandidate = {
   arxivId?: string;
   url?: string;
   pdfUrl?: string;
+  localFile?: string;
+  localBibFile?: string;
   abstract?: string;
   key?: string;
   bibtex?: string;
@@ -4143,7 +4145,8 @@ function bibEntryToCandidate(e: BibEntry, prompt: string): CitationCandidate {
   const venue = e.fields.journal ?? e.fields.journaltitle ?? e.fields.booktitle ?? e.fields.publisher;
   const doi = normalizeDoi(e.fields.doi);
   const text = [title, authors.join(" "), year, venue, e.fields.abstract, e.fields.keywords].filter(Boolean).join(" ");
-  return { id: `local:${e.file}:${e.key}`, title, authors, year, venue, doi, url: e.fields.url, abstract: e.fields.abstract, key: e.key, bibtex: e.raw, source: `local ${e.file}`, status: "local", score: 1.2 + tokenScore(prompt, text), notes: [`Already present in ${e.file} as ${e.key}`] };
+  const localFile = e.fields.file;
+  return { id: `local:${e.file}:${e.key}`, title, authors, year, venue, doi, url: e.fields.url, localFile, localBibFile: e.file, abstract: e.fields.abstract, key: e.key, bibtex: e.raw, source: `local ${e.file}`, status: "local", score: 1.2 + tokenScore(prompt, text), notes: [`Already present in ${e.file} as ${e.key}`, ...(localFile ? [`BibTeX file field: ${localFile}`] : [])] };
 }
 
 async function fetchJson(url: string, signal?: AbortSignal): Promise<any | null> {
