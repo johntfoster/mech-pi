@@ -3115,6 +3115,17 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
     return lines.map(line => /^\s*→\s/.test(stripTerminalEscapes(line)) ? highlightSelectedAutocompleteLine(this.uiTheme, line, width) : line);
   }
 
+  protected override handleCtrlAPrefixCommand(ch: string | undefined, data: string): boolean {
+    if (super.handleCtrlAPrefixCommand(ch, data)) return true;
+    const command = ch === "c" ? "/mechpane new" : ch === "n" ? "/mechpane next" : ch === "p" ? "/mechpane prev" : "";
+    if (!command) return false;
+    this.status = `PREFIX ${ch}`;
+    this.enterInsert();
+    this.onSubmit?.(command);
+    this.tui.requestRender();
+    return true;
+  }
+
   handleInput(data: string): void {
     if (isKeyRelease(data)) {
       if (this.mode === "insert" && this.handleVoiceSpace(data)) this.tui.requestRender();
