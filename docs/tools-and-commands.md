@@ -4,6 +4,10 @@ For prompt editing and tmux-like copy-mode keys, see [keybindings.md](keybinding
 
 ## Slash commands
 
+### `/mechpane [new|next|prev|status|<number>]`
+
+Manage mech-pi logical panes. `new` creates a pane backed by a new pi session file, `next`/`prev` cycle through panes in stable creation order, `status` lists them, and a number such as `/mechpane 2` jumps directly to that pane.
+
 ### `/mechmap [root.tex]`
 
 Ingest the current LaTeX repository and write `.mechpi/paper-map.json`. If compiled `.aux` files are present, the map also records label-to-equation-number data from `\newlabel` entries.
