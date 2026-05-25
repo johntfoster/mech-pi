@@ -1704,6 +1704,7 @@ class PromptScreenCopyOverlay implements Focusable {
   private lastWidth = 80;
   private visualAnchor: { line: number; col: number } | null = null;
   private pendingPrefix = false;
+  private prefixTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingY = false;
   private pendingG = false;
   private visualMode: "char" | "line" | null = null;
@@ -1732,17 +1733,18 @@ class PromptScreenCopyOverlay implements Focusable {
   invalidate(): void {}
 
   handleInput(data: string): void {
+    if (isKeyRelease(data)) return;
     const prefixed = splitCtrlAPrefix(data);
     if (prefixed !== null) {
-      if (prefixed.length === 0) { this.pendingPrefix = true; this.status = "PREFIX"; return; }
-      this.pendingPrefix = false;
+      if (prefixed.length === 0) { this.beginPrefix(); return; }
+      this.clearPrefix();
       const ch = prefixKeyChar(prefixed);
       if (ch === "[") { this.close(); return; }
       if (ch === "]") return;
       return;
     }
     if (this.pendingPrefix) {
-      this.pendingPrefix = false;
+      this.clearPrefix();
       const ch = prefixKeyChar(data);
       if (ch === "[") { this.close(); return; }
       if (ch === "]") return;
