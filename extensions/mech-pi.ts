@@ -158,19 +158,26 @@ function envDisablesMechRag(): boolean {
   return false;
 }
 
-function sessionDisablesMechRag(ctx: Pick<ExtensionContext, "sessionManager">): boolean {
-  let disabled = false;
+function sessionMechRagSetting(ctx: Pick<ExtensionContext, "sessionManager">): boolean | undefined {
+  let enabled: boolean | undefined;
   for (const entry of ctx.sessionManager.getEntries()) {
     if (entry.type !== "custom" || entry.customType !== MECH_RAG_SESSION_ENTRY) continue;
     const data = (entry as { data?: Record<string, unknown> }).data ?? {};
-    if (data.enabled === false || data.disabled === true || data.mode === "off") disabled = true;
-    if (data.enabled === true || data.disabled === false || data.mode === "on") disabled = false;
+    if (data.enabled === false || data.disabled === true || data.mode === "off") enabled = false;
+    if (data.enabled === true || data.disabled === false || data.mode === "on") enabled = true;
   }
-  return disabled;
+  return enabled;
 }
 
-function mechRagDisabled(ctx: Pick<ExtensionContext, "sessionManager">, cliFlag = false): boolean {
-  return cliFlag || envDisablesMechRag() || sessionDisablesMechRag(ctx);
+function sessionDisablesMechRag(ctx: Pick<ExtensionContext, "sessionManager">): boolean {
+  return sessionMechRagSetting(ctx) === false;
+}
+
+function mechRagDisabled(ctx: Pick<ExtensionContext, "sessionManager" | "cwd">, cliFlag = false): boolean {
+  if (cliFlag || envDisablesMechRag()) return true;
+  const sessionSetting = sessionMechRagSetting(ctx);
+  if (sessionSetting !== undefined) return !sessionSetting;
+  return !mechPaneDefaultRagEnabled(ctx.cwd);
 }
 
 function mechRagModeData(enabled: boolean, source: string): Record<string, unknown> {
