@@ -4757,16 +4757,21 @@ async function insertCitationCandidates(ctx: ExtensionContext, map: PaperMap, ca
     await writeMap(ctx.cwd, await buildPaperMap(ctx.cwd));
     return `BibTeX ${toAppend.length ? "added" : "ready"} in ${bibRel} as ${keys.join(", ")}; TeX unchanged by --to-bib.${keepNote}`;
   }
+  const citationSnippet = `\\${inferCiteCommand(map)}{${keys.join(",")}}`;
   const loc = await findCitationLocation(ctx.cwd, map, prompt);
   if (!loc || loc.confidence !== "high") {
     const target = loc
       ? { file: loc.file, line: loc.line, score: loc.confidence === "medium" ? 50 : 0, title: "closest citation location", preview: loc.snippet }
       : await findClosestCitationEditTarget(ctx.cwd, map, prompt);
+    copyTextToSystemClipboard(citationSnippet);
     if (target) {
-      const opened = openExternalEditorAt(ctx.cwd, target);
-      return `BibTeX ready in ${bibRel} as ${keys.join(", ")}; TeX unchanged because citation location was not high confidence. Opened ${target.file}:${target.line} in ${opened.command} for manual placement.${keepNote}`;
+      const where = await openSourceFilePopupEditor(ctx, target, {
+        initialYankText: citationSnippet,
+        helpSuffix: `Citation ${citationSnippet} is in the modal register and system clipboard; press p/P to paste.`,
+      });
+      return `BibTeX ready in ${bibRel} as ${keys.join(", ")}; citation ${citationSnippet} copied for manual placement${where ? ` and popup editor opened at ${where}` : ""}.${keepNote}`;
     }
-    return `BibTeX ready in ${bibRel} as ${keys.join(", ")}; TeX unchanged because no safe source location was found.${keepNote}`;
+    return `BibTeX ready in ${bibRel} as ${keys.join(", ")}; TeX unchanged because no safe source location was found. Citation ${citationSnippet} copied to clipboard.${keepNote}`;
   }
 
   const allHighMetadata = prepared.every(p => p.highMetadata);
@@ -4775,7 +4780,7 @@ async function insertCitationCandidates(ctx: ExtensionContext, map: PaperMap, ca
     if (!ok) return `BibTeX ready in ${bibRel} as ${keys.join(", ")}; TeX unchanged.${keepNote}`;
   }
 
-  const citeCommand = inferCiteCommand(map);
+  const citeCommand = citationSnippet.match(/^\\([^{}]+)\{/)?.[1] ?? inferCiteCommand(map);
   const texAbs = path.join(ctx.cwd, loc.file);
   const tex = await readText(texAbs);
   const inserted = insertCitationIntoText(tex, loc, citeCommand, keys.join(","));
