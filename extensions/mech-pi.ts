@@ -3107,6 +3107,36 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
   }
 
   isVoiceDictating(): boolean { return this.voiceDictationActive; }
+  hasVoiceGeneratedPrompt(): boolean { return this.voiceUsedForCurrentPrompt; }
+  clearVoiceGeneratedPrompt(): void { this.voiceUsedForCurrentPrompt = false; }
+
+  async rewriteVoicePrompt(ctx: ExtensionContext, submitAfter = false): Promise<void> {
+    if (!this.voiceUsedForCurrentPrompt) { if (submitAfter) this.submitPrompt(); return; }
+    const original = this.getText();
+    if (!original.trim()) { this.voiceUsedForCurrentPrompt = false; return; }
+    const seq = ++this.voiceRewriteSeq;
+    this.status = "VOICE cleanup…";
+    this.tui.requestRender();
+    try {
+      const rewritten = await rewriteVoicePromptText(ctx, original);
+      if (seq !== this.voiceRewriteSeq) return;
+      if (this.getText() !== original) {
+        this.status = "VOICE cleanup skipped: edited";
+        this.tui.requestRender();
+        return;
+      }
+      const cleaned = rewritten.trim();
+      if (cleaned && cleaned !== original.trim()) this.setTextPreserveCursor(cleaned, cleaned.length);
+      this.voiceUsedForCurrentPrompt = false;
+      this.enterNormal("NORMAL");
+      if (submitAfter) this.submitPrompt();
+      else this.tui.requestRender();
+    } catch (err) {
+      this.status = `VOICE cleanup failed: ${err instanceof Error ? err.message : String(err)}`;
+      this.tui.requestRender();
+      if (submitAfter) this.submitPrompt();
+    }
+  }
 
   insertVoiceText(text: string, submit = /^(1|true|yes|on)$/i.test(mechEnv("MECHPI_VOICE_AUTOSUBMIT") ?? "")): void {
     const cleaned = text.trim();
