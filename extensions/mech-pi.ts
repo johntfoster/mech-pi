@@ -3671,6 +3671,21 @@ async function loadBibEntries(cwd: string, map: PaperMap): Promise<BibEntry[]> {
   return entries;
 }
 
+async function loadPreferredCitationBibEntries(ctx: ExtensionContext, map: PaperMap): Promise<BibEntry[]> {
+  const globalBib = configuredGlobalBibPath(ctx.cwd);
+  const entries: BibEntry[] = [];
+  const seenFiles = new Set<string>();
+  if (globalBib && fss.existsSync(globalBib)) {
+    entries.push(...parseBibEntries(await readText(globalBib).catch(() => ""), globalBib));
+    seenFiles.add(path.resolve(globalBib));
+  }
+  for (const e of await loadBibEntries(ctx.cwd, map)) {
+    const abs = path.resolve(ctx.cwd, e.file);
+    if (!seenFiles.has(abs)) entries.push(e);
+  }
+  return entries;
+}
+
 async function detectBibFile(cwd: string, map: PaperMap): Promise<string> {
   if (map.bibKeys[0]?.file) return map.bibKeys[0].file;
   const root = map.rootTex ? await readText(path.join(cwd, map.rootTex)).catch(() => "") : "";
