@@ -3762,8 +3762,7 @@ async function reportPostCompileUntrackedRelevant(ctx: ExtensionContext, map: Pa
 }
 
 
-async function configuredMiniModel(ctx: ExtensionContext, envName: string): Promise<any | undefined> {
-  const spec = mechEnv(envName) ?? mechEnv("MECHPI_MINI_MODEL") ?? "openai/gpt-4o-mini";
+async function configuredModelFromSpec(ctx: ExtensionContext, spec: string): Promise<any | undefined> {
   const sep = spec.includes("/") ? "/" : spec.includes(":") ? ":" : "";
   if (sep) {
     const [provider, ...rest] = spec.split(sep);
@@ -3775,15 +3774,11 @@ async function configuredMiniModel(ctx: ExtensionContext, envName: string): Prom
 }
 
 async function commitMessageModel(ctx: ExtensionContext): Promise<any | undefined> {
-  const spec = mechEnv("MECHPI_COMMIT_MODEL") ?? mechEnv("MECHPI_MINI_MODEL") ?? "openai/gpt-4o-mini";
-  const sep = spec.includes("/") ? "/" : spec.includes(":") ? ":" : "";
-  if (sep) {
-    const [provider, ...rest] = spec.split(sep);
-    const id = rest.join(sep);
-    const found = (ctx.modelRegistry as any).find?.(provider, id);
-    if (found) return found;
-  }
-  return ctx.model;
+  return await configuredModelFromSpec(ctx, mechEnv("MECHPI_COMMIT_MODEL") ?? mechEnv("MECHPI_MINI_MODEL") ?? "openai/gpt-4o-mini");
+}
+
+async function summaryModel(ctx: ExtensionContext): Promise<any | undefined> {
+  return await configuredModelFromSpec(ctx, mechEnv("MECHPI_SUMMARY_MODEL") ?? "openai/gpt-5.4");
 }
 
 function fallbackCommitMessage(reason: string, files: string[]): string {
