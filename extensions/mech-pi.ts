@@ -3058,6 +3058,39 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
     else this.enterInsert();
     this.tui.requestRender();
   }
+  beginVoiceDictation(): void {
+    if (this.voiceDictationActive) return;
+    this.voiceDictationActive = true;
+    this.voiceDictationBaseText = this.getText();
+    this.voiceDictationCursor = this.flatIndex();
+    this.enterNormal("VOICE");
+    this.tui.requestRender();
+  }
+
+  updateVoiceDictation(committed: string, partial = "", _final = false): void {
+    if (!this.voiceDictationActive) this.beginVoiceDictation();
+    const spoken = `${committed}${committed && partial ? " " : ""}${partial}`.trim();
+    const before = this.voiceDictationBaseText.slice(0, this.voiceDictationCursor);
+    const after = this.voiceDictationBaseText.slice(this.voiceDictationCursor);
+    const prefix = before.length > 0 && spoken && !/\s$/.test(before) ? " " : "";
+    const suffix = after.length > 0 && spoken && !/^\s/.test(after) ? " " : "";
+    this.setTextPreserveCursor(`${before}${prefix}${spoken}${suffix}${after}`, before.length + prefix.length + spoken.length);
+    this.status = partial ? "VOICE …" : "VOICE";
+    this.tui.requestRender();
+  }
+
+  endVoiceDictation(submit = false, cancel = false): void {
+    if (this.voiceDictationActive && cancel) this.setTextPreserveCursor(this.voiceDictationBaseText, this.voiceDictationCursor);
+    this.voiceDictationActive = false;
+    this.voiceDictationBaseText = "";
+    this.voiceDictationCursor = 0;
+    if (submit) this.submitPrompt();
+    else this.enterNormal("NORMAL");
+    this.tui.requestRender();
+  }
+
+  isVoiceDictating(): boolean { return this.voiceDictationActive; }
+
   insertVoiceText(text: string, submit = /^(1|true|yes|on)$/i.test(mechEnv("MECHPI_VOICE_AUTOSUBMIT") ?? "")): void {
     const cleaned = text.trim();
     if (!cleaned) return;
