@@ -6818,7 +6818,7 @@ class VoiceInputController {
 
   dispose(): void {
     this.stopWakeLoop();
-    this.stopNow();
+    this.stopNow({ cancel: true });
   }
 
   private spawnWakeCommand(): void {
