@@ -1732,6 +1732,31 @@ class PromptScreenCopyOverlay implements Focusable {
   setHandle(handle: { hide(): void }): void { this.handle = handle; }
   invalidate(): void {}
 
+  private beginPrefix(): void {
+    this.clearPrefixTimer();
+    this.pendingPrefix = true;
+    this.status = "PREFIX";
+    this.prefixTimer = setTimeout(() => {
+      this.pendingPrefix = false;
+      this.prefixTimer = null;
+      this.status = "COPY";
+      this.tui.requestRender();
+    }, CTRL_A_PREFIX_TIMEOUT_MS);
+    this.tui.requestRender();
+  }
+
+  private clearPrefixTimer(): void {
+    if (!this.prefixTimer) return;
+    clearTimeout(this.prefixTimer);
+    this.prefixTimer = null;
+  }
+
+  private clearPrefix(): void {
+    this.clearPrefixTimer();
+    this.pendingPrefix = false;
+    this.status = "COPY";
+  }
+
   handleInput(data: string): void {
     if (isKeyRelease(data)) return;
     const prefixed = splitCtrlAPrefix(data);
