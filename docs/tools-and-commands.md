@@ -77,8 +77,8 @@ Find citation candidates for a natural-language citation need, show a keyboard-n
 
 Behavior:
 
-- Searches existing paper `.bib` files first.
-- Searches Crossref, OpenAlex, Semantic Scholar, and arXiv when local entries are insufficient.
+- Searches the configured global BibTeX database first when `MECHPI_GLOBAL_BIB` is set or the default `~/Documents/LaTeX/include/all.bib` exists; project-local `.bib` files are searched after that because `/mechcompile` regenerates the local bibliography from the global one.
+- Searches Crossref, OpenAlex, Semantic Scholar, and arXiv when BibTeX entries are insufficient.
 - Adds a Google Scholar manual fallback row that opens Scholar in a browser and lets you paste BibTeX for validation.
 - Uses DOI content negotiation for authoritative BibTeX when possible.
 - `j`/`k` or arrows move the highlighted row, `Space` toggles multi-selection with a ✅ marker, first `l` opens a detail view and first prefers an existing local BibTeX `file = {...}` attachment, opening/summarizing that file when available. If no local file exists, it tries to download an accessible PDF into `/tmp/mech-pi-citations/`, extract first-page text, and generate a fast mini-model summary. Only when neither local file nor downloadable PDF is available does it open the best web reference. `h` returns to the list, and `Enter` inserts the highlighted citation or all checked citations.
