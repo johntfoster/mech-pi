@@ -23,7 +23,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Streaming Vosk stdin transcriber")
     parser.add_argument("--model", default=None, help="Vosk model directory")
     parser.add_argument("--model-name", default=None, help="Vosk model name to find/download")
-    parser.add_argument("--lang", default="en", help="Language for Vosk model auto-selection")
+    parser.add_argument("--lang", default="en-us", help="Language for Vosk model auto-selection")
     parser.add_argument("--sample-rate", type=float, default=16000.0)
     parser.add_argument("--chunk-size", type=int, default=4000)
     parser.add_argument("--words", action="store_true")
