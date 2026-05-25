@@ -103,7 +103,7 @@ Configuration can be layered with `.mechpirc`: built-in defaults, then `$HOME/.m
 - `Ctrl+Alt+Space`: toggle voice recording.
 - Optional: set `MECHPI_VOICE_SPACE_HOLD=1`, then hold `Space` on an empty prompt for push-to-talk.
 - `Ctrl-a` starts a tmux-like prefix that waits up to 2 seconds for the next key.
-- `Ctrl-a` then `c`: create a new mech-pi logical pane; `Ctrl-a` then `n` / `p`: switch to the next/previous pane.
+- `Ctrl-a` then `c`: create a new mech-pi logical pane; `Ctrl-a` then `n` / `p`: switch to the next/previous pane; `Ctrl-a` then `1` ... `9`: jump directly to that numbered pane.
 - `Ctrl-a` then `]`: enter full-screen copy/navigation mode.
 - `Ctrl-a` then `[`: return from copy mode to the prompt in `NORMAL` mode.
 - Commands/dialogs return to `NORMAL` mode when prompt text is present and `INSERT` mode when the prompt is empty; full-screen copy mode returns in `NORMAL` mode so `p`/`P` can paste immediately.
