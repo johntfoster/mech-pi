@@ -4394,15 +4394,17 @@ async function fetchLandingPageText(c: CitationCandidate, signal?: AbortSignal):
   return normalizeSpace(decodeHtml(html.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " "))).slice(0, 8000);
 }
 
-async function generateCitationSummaryWithMiniModel(ctx: ExtensionContext, c: CitationCandidate, sourceText: string, sourceLabel: string): Promise<string> {
+async function generateCitationSummary(ctx: ExtensionContext, c: CitationCandidate, sourceText: string, sourceLabel: string): Promise<string> {
   const fallback = `${c.title}${c.year ? ` (${c.year})` : ""}${sourceText ? `: ${sourceText}` : c.abstract ? `: ${c.abstract}` : ""}`.slice(0, 900);
   try {
-    const model = await configuredMiniModel(ctx, "MECHPI_SUMMARY_MODEL");
+    const model = await summaryModel(ctx);
     if (!model) return fallback || "No model selected for summary generation.";
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
     if (!auth.ok || !auth.apiKey) return fallback;
-    const msg: Message = { role: "user", timestamp: Date.now(), content: [{ type: "text", text: `Write one concise paragraph summarizing this paper for citation selection. Use only supplied ${sourceLabel}; do not invent facts.\n\nTitle: ${c.title}\nAuthors: ${c.authors.join(", ")}\nYear: ${c.year ?? ""}\nVenue: ${c.venue ?? ""}\nDOI/arXiv: ${c.doi ?? c.arxivId ?? ""}\n\n${sourceLabel}:\n${sourceText || c.abstract || "No abstract/text available."}` }] };
-    const r = await complete(model, { systemPrompt: "You summarize citation candidates conservatively from supplied text only. Output one short paragraph.", messages: [msg] }, { apiKey: auth.apiKey, headers: auth.headers, signal: ctx.signal });
+    const msg: Message = { role: "user", timestamp: Date.now(), content: [{ type: "text", text: `Write one concise but adequate paragraph summarizing this paper for citation selection. Use only supplied ${sourceLabel}; do not invent facts. Include the main topic, method/evidence, and why it may be useful to cite.\n\nTitle: ${c.title}\nAuthors: ${c.authors.join(", ")}\nYear: ${c.year ?? ""}\nVenue: ${c.venue ?? ""}\nDOI/arXiv: ${c.doi ?? c.arxivId ?? ""}\n\n${sourceLabel}:\n${sourceText || c.abstract || "No abstract/text available."}` }] };
+    const maxTokens = Number.parseInt(mechEnv("MECHPI_SUMMARY_MAX_TOKENS") ?? "700", 10) || 700;
+    const serviceTier = mechEnv("MECHPI_SUMMARY_SERVICE_TIER") ?? "priority";
+    const r = await complete(model, { systemPrompt: "You summarize citation candidates conservatively from supplied text only. No hidden reasoning is needed. Output one concise, information-dense paragraph.", messages: [msg] }, { apiKey: auth.apiKey, headers: auth.headers, signal: ctx.signal, reasoning: "off", reasoningSummary: null, serviceTier, maxTokens, temperature: 0.2 });
     return r.content.filter((x): x is { type: "text"; text: string } => x.type === "text").map(x => x.text).join("\n").trim() || fallback;
   } catch { return fallback; }
 }
