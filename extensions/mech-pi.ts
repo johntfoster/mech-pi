@@ -7286,6 +7286,42 @@ async function runMechCompileCommand(args: string, ctx: ExtensionContext): Promi
 let activePromptEditor: MechPiModalPromptEditor | null = null;
 let activeVoice: VoiceInputController | null = null;
 
+async function handleMechPaneCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
+  const cmd = args.trim().toLowerCase() || "status";
+  const current = ctx.sessionManager.getSessionFile();
+  rememberMechPaneSession(current);
+  if (cmd === "status" || cmd === "list") {
+    const sessions = availableMechPaneSessions();
+    ctx.ui.notify(`mech-pi panes: ${mechPaneLabel()}${sessions.length ? `\n${sessions.map((file, i) => `${i === mechPaneActiveIndex ? "*" : " "} ${i + 1}. ${file}`).join("\n")}` : ""}`, "info");
+    return;
+  }
+  if (cmd === "new" || cmd === "c" || cmd === "create") {
+    const parentSession = current ?? undefined;
+    const result = await ctx.newSession({
+      parentSession,
+      withSession: async (nextCtx) => {
+        rememberMechPaneSession(nextCtx.sessionManager.getSessionFile());
+        nextCtx.ui.notify(`Created ${mechPaneLabel()} (Ctrl-a n/p switches panes)`, "info");
+      },
+    });
+    if (result.cancelled) ctx.ui.notify("New pane cancelled", "info");
+    return;
+  }
+  if (cmd === "next" || cmd === "n" || cmd === "prev" || cmd === "previous" || cmd === "p") {
+    const target = nextMechPaneSession(current, cmd === "prev" || cmd === "previous" || cmd === "p" ? -1 : 1);
+    if (!target) { ctx.ui.notify("No other mech-pi pane yet. Use Ctrl-a c to create one.", "info"); return; }
+    const result = await ctx.switchSession(target, {
+      withSession: async (nextCtx) => {
+        rememberMechPaneSession(nextCtx.sessionManager.getSessionFile());
+        nextCtx.ui.notify(`Switched to ${mechPaneLabel()}`, "info");
+      },
+    });
+    if (result.cancelled) ctx.ui.notify("Pane switch cancelled", "info");
+    return;
+  }
+  ctx.ui.notify("Usage: /mechpane [new|next|prev|status]", "warning");
+}
+
 export default function mechPi(pi: ExtensionAPI) {
   pi.registerFlag("no-mech-rag", { description: "Disable mech-pi retrieval from .mechpi/ingest/vector-store.json for this session", type: "boolean", default: false });
   installAssistantLatexPreviewRenderer();
