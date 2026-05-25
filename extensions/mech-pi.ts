@@ -1827,6 +1827,7 @@ class PromptScreenCopyOverlay implements Focusable {
   }
 
   private close(): void {
+    this.clearPrefixTimer();
     if (latexPreviewScrollSuppressTimer) {
       clearTimeout(latexPreviewScrollSuppressTimer);
       latexPreviewScrollSuppressTimer = null;
