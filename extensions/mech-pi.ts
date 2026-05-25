@@ -105,6 +105,14 @@ function disableMechRetrieveTool(pi: ExtensionAPI): void {
   } catch {}
 }
 
+function enableMechRetrieveTool(pi: ExtensionAPI): void {
+  try {
+    const active = pi.getActiveTools();
+    const exists = pi.getAllTools().some(tool => tool.name === "mech_retrieve");
+    if (exists && !active.includes("mech_retrieve")) pi.setActiveTools([...active, "mech_retrieve"]);
+  } catch {}
+}
+
 interface EquationNumberInfo {
   label?: string;
   number: string;
@@ -7602,7 +7610,8 @@ export default function mechPi(pi: ExtensionAPI) {
       }
       if (cmd === "on" || cmd === "enable" || cmd === "enabled") {
         appendMechRagMode(ctx.sessionManager, true, "/mechrag on");
-        ctx.ui.notify("Mech-pi RAG enabled for this session. Run /reload if mech_retrieve was removed from the active tools.", "info");
+        enableMechRetrieveTool(pi);
+        ctx.ui.notify("Mech-pi RAG enabled for this session.", "info");
         return;
       }
       ctx.ui.notify("Usage: /mechrag [status|on|off]", "warning");
