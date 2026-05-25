@@ -6626,8 +6626,8 @@ class VoiceInputController {
 
   constructor(private ctx: ExtensionContext) {}
 
-  isEnabled(): boolean { return this.hasRecorder() && this.hasTranscriber(); }
-  isRecording(): boolean { return this.recorder !== null; }
+  isEnabled(): boolean { return this.hasStreamingTranscriber() || (this.hasRecorder() && this.hasTranscriber()); }
+  isRecording(): boolean { return this.recorder !== null || this.streamRecorder !== null || this.streamStt !== null; }
   isWakeEnabled(): boolean { return this.wakeEnabled; }
 
   notifyError(err: unknown): void {
@@ -6642,7 +6642,8 @@ class VoiceInputController {
       `recorder: ${rec?.name ?? "missing"}`,
       `transcriber: ${transcriber}`,
       `recording: ${this.isRecording() ? "yes" : "no"}`,
-      `push-to-talk: ${voiceSpaceHoldEnabled() ? "space-hold on" : "space-hold off"} (Ctrl+Alt+Space and /mechvoice toggle are always available)`,
+      `realtime: ${this.hasStreamingTranscriber() ? "vosk" : "unavailable"}`,
+      `push-to-talk: ${voiceSpaceHoldEnabled() ? "space-hold on" : "space-hold off"} (Ctrl+Space in NORMAL and Ctrl+Alt+Space are available)`,
       `wake: ${this.wakeEnabled ? "on" : "off"}`,
     ];
     if (!this.isEnabled()) {
