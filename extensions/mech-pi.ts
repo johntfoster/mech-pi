@@ -2295,27 +2295,55 @@ abstract class MechPiModalTextEditor extends CustomEditor {
   }
 
   protected tryHandleCtrlAPrefixInput(data: string): boolean {
+    if (isKeyRelease(data)) return this.pendingPrefix;
     const prefixed = splitCtrlAPrefix(data);
     if (prefixed !== null) {
       if (prefixed.length === 0) {
-        this.pendingPrefix = true;
-        this.status = "PREFIX";
-        this.tui.requestRender();
+        this.beginCtrlAPrefix();
         return true;
       }
-      this.pendingPrefix = false;
+      this.clearCtrlAPrefix();
       const ch = prefixKeyChar(prefixed);
-      if (ch === "]") { this.enterScreenCopyMode(); this.tui.requestRender(); return true; }
-      if (ch === "[") { this.enterInsert(); this.tui.requestRender(); return true; }
+      if (this.handleCtrlAPrefixCommand(ch, prefixed)) return true;
       return this.handleUnknownPrefix(prefixed);
     }
     if (this.pendingPrefix) {
-      this.pendingPrefix = false;
+      this.clearCtrlAPrefix();
       const ch = prefixKeyChar(data);
-      if (ch === "]") { this.enterScreenCopyMode(); this.tui.requestRender(); return true; }
-      if (ch === "[") { this.enterInsert(); this.tui.requestRender(); return true; }
+      if (this.handleCtrlAPrefixCommand(ch, data)) return true;
       return this.handleUnknownPrefix(data);
     }
+    return false;
+  }
+
+  protected beginCtrlAPrefix(): void {
+    this.clearCtrlAPrefixTimer();
+    this.pendingPrefix = true;
+    this.status = "PREFIX";
+    this.prefixTimer = setTimeout(() => {
+      this.pendingPrefix = false;
+      this.prefixTimer = null;
+      this.status = this.mode === "insert" ? "INSERT" : this.mode === "visualLine" ? "VISUAL LINE" : this.mode.toUpperCase();
+      this.tui.requestRender();
+    }, CTRL_A_PREFIX_TIMEOUT_MS);
+    this.tui.requestRender();
+  }
+
+  protected clearCtrlAPrefixTimer(): void {
+    if (!this.prefixTimer) return;
+    clearTimeout(this.prefixTimer);
+    this.prefixTimer = null;
+  }
+
+  protected clearCtrlAPrefix(): void {
+    this.clearCtrlAPrefixTimer();
+    this.pendingPrefix = false;
+    if (this.status === "PREFIX") this.status = this.mode === "insert" ? "INSERT" : this.mode === "visualLine" ? "VISUAL LINE" : this.mode.toUpperCase();
+  }
+
+  protected handleCtrlAPrefixCommand(ch: string | undefined, _data: string): boolean {
+    if (ch === "]") { this.enterScreenCopyMode(); this.tui.requestRender(); return true; }
+    if (ch === "[") { this.enterInsert(); this.tui.requestRender(); return true; }
     return false;
   }
 
