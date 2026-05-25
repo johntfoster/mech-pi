@@ -4416,19 +4416,19 @@ async function inspectCitationCandidate(ctx: ExtensionContext, c: CitationCandid
     const text = await extractLocalCitationText(ctx, local);
     c.referencePath = local;
     c.notes = unique([...c.notes, `Using local BibTeX file field: ${local}`]);
-    c.summary = await generateCitationSummaryWithMiniModel(ctx, c, text || c.abstract || "", text ? "local file text" : "metadata/abstract");
+    c.summary = await generateCitationSummary(ctx, c, text || c.abstract || "", text ? "local file text" : "metadata/abstract");
     return c.summary;
   }
   const pdf = await downloadPdfToTmp(ctx, c);
   if (pdf) {
     const text = await extractPdfTextPreview(ctx.cwd, pdf);
-    c.summary = await generateCitationSummaryWithMiniModel(ctx, c, text || c.abstract || "", text ? "PDF text from first pages" : "metadata/abstract");
+    c.summary = await generateCitationSummary(ctx, c, text || c.abstract || "", text ? "PDF text from first pages" : "metadata/abstract");
     return c.summary;
   }
   const url = bestCitationUrl(c);
   if (openWebOnNoPdf && url) openUrlExternal(url);
   const landing = await fetchLandingPageText(c, ctx.signal);
-  c.summary = await generateCitationSummaryWithMiniModel(ctx, c, landing || c.abstract || "", landing ? "landing-page text/metadata" : "metadata/abstract");
+  c.summary = await generateCitationSummary(ctx, c, landing || c.abstract || "", landing ? "landing-page text/metadata" : "metadata/abstract");
   c.notes = unique([...c.notes, url ? "No local BibTeX file was available and PDF could not be downloaded automatically; opened landing page for inspection" : "No local BibTeX file was available and PDF could not be downloaded automatically"]);
   return c.summary;
 }
