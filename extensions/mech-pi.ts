@@ -7815,35 +7815,6 @@ export default function mechPi(pi: ExtensionAPI) {
       }
     }
   });
-  pi.registerCommand("new", {
-    description: "Start a new session with mech-pi options. Usage: /new --no-mech-rag",
-    getArgumentCompletions: (prefix: string): AutocompleteItem[] | null => {
-      const items = [
-        { value: "--no-mech-rag", label: "--no-mech-rag", description: "Disable local ingest-store retrieval in the new session" },
-      ];
-      const filtered = items.filter(item => item.value.startsWith(prefix.trim()));
-      return filtered.length ? filtered : items;
-    },
-    handler: async (args, ctx) => {
-      const tokens = args.trim().split(/\s+/).filter(Boolean);
-      const wantsNoRag = tokens.some(t => t === "--no-mech-rag" || t === "--no-rag" || t === "--without-mech-rag");
-      const wantsHelp = tokens.some(t => t === "--help" || t === "-h");
-      const known = new Set(["--no-mech-rag", "--no-rag", "--without-mech-rag", "--help", "-h"]);
-      const unknown = tokens.filter(t => !known.has(t));
-      if (wantsHelp || !wantsNoRag || unknown.length) {
-        const extra = unknown.length ? ` Unknown option(s): ${unknown.join(", ")}.` : "";
-        ctx.ui.notify(`Usage: /new --no-mech-rag${extra}\nPlain /new is handled by pi's built-in command.`, unknown.length ? "warning" : "info");
-        return;
-      }
-      const parentSession = ctx.sessionManager.getSessionFile();
-      const result = await ctx.newSession({
-        parentSession: parentSession ?? undefined,
-        setup: async (sm) => { appendMechRagMode(sm, false, "/new --no-mech-rag"); },
-        withSession: async (nextCtx) => { nextCtx.ui.notify("New session started with mech-pi RAG disabled.", "info"); },
-      });
-      if (result.cancelled) ctx.ui.notify("New session cancelled", "info");
-    }
-  });
   pi.registerCommand("mechpane", {
     description: "Manage mech-pi logical panes. Usage: /mechpane [new|next|prev|status|<number>]",
     handler: handleMechPaneCommand,
