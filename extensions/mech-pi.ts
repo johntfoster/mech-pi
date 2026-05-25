@@ -4317,6 +4317,44 @@ function safePathPart(s: string, fallback = "untitled"): string {
   return cleaned || fallback;
 }
 
+function bibFileFieldPathFragments(raw: string): string[] {
+  return unique(raw.split(/\s*;\s*/).flatMap(part => {
+    const clean = part.trim().replace(/^\{+|\}+$/g, "").replace(/^\"|\"$/g, "");
+    const zoteroParts = clean.split(":").map(s => s.trim()).filter(Boolean);
+    const fragments = [clean, ...zoteroParts]
+      .map(s => s.replace(/^file:\/\//i, "").trim())
+      .filter(s => s && !/^https?:\/\//i.test(s) && (/[\\/]/.test(s) || /\.(?:pdf|txt|md|html?|docx)$/i.test(s)));
+    return fragments;
+  }));
+}
+
+function resolveCitationLocalFiles(ctx: ExtensionContext, c: CitationCandidate): string[] {
+  if (!c.localFile) return [];
+  const bibDir = c.localBibFile ? path.dirname(path.resolve(ctx.cwd, c.localBibFile)) : ctx.cwd;
+  const bases = unique([ctx.cwd, bibDir, citationReferenceRoot()]);
+  const out: string[] = [];
+  for (const frag of bibFileFieldPathFragments(c.localFile)) {
+    const expanded = expandUserPath(frag);
+    const candidates = path.isAbsolute(expanded) ? [expanded] : bases.map(base => path.resolve(base, expanded));
+    for (const p of candidates) if (fss.existsSync(p) && fss.statSync(p).isFile()) out.push(path.resolve(p));
+  }
+  return unique(out);
+}
+
+function openLocalDocumentPath(ctx: ExtensionContext, abs: string, label?: string): void {
+  const opener = mechEnv("MECHPI_DOCUMENT_VIEWER") ?? mechEnv("MECHPI_PDF_VIEWER") ?? "xdg-open";
+  spawn(opener, [abs], { cwd: ctx.cwd, detached: true, stdio: "ignore" }).unref();
+  ctx.ui.notify(`Opening ${label ?? abs} with ${opener}`, "info");
+}
+
+async function extractLocalCitationText(ctx: ExtensionContext, abs: string): Promise<string> {
+  const ext = path.extname(abs).toLowerCase();
+  if (ext === ".pdf") return await extractPdfTextPreview(ctx.cwd, abs);
+  const raw = await readText(abs).catch(() => "");
+  if (ext === ".html" || ext === ".htm") return normalizeSpace(decodeHtml(raw.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " "))).slice(0, 14000);
+  return normalizeSpace(raw).slice(0, 14000);
+}
+
 function candidatePdfUrls(c: CitationCandidate): string[] {
   const urls: string[] = [];
   if (c.pdfUrl) urls.push(c.pdfUrl);
