@@ -7312,6 +7312,20 @@ async function handleMechPaneCommand(args: string, ctx: ExtensionCommandContext)
     ctx.ui.notify(`mech-pi panes: ${mechPaneLabel()}${sessions.length ? `\n${sessions.map((file, i) => `${i === mechPaneActiveIndex ? "*" : " "} ${i + 1}. ${file}`).join("\n")}` : ""}`, "info");
     return;
   }
+  const paneNumber = /^\d+$/.test(cmd) ? Number.parseInt(cmd, 10) : NaN;
+  if (Number.isInteger(paneNumber)) {
+    const target = numberedMechPaneSession(current, paneNumber);
+    if (!target) { ctx.ui.notify(`No mech-pi pane ${paneNumber}. Use Ctrl-a c to create panes.`, "warning"); return; }
+    if (current && path.resolve(current) === path.resolve(target)) { ctx.ui.notify(`Already at ${mechPaneLabel()}`, "info"); return; }
+    const result = await ctx.switchSession(target, {
+      withSession: async (nextCtx) => {
+        rememberMechPaneSession(nextCtx.sessionManager.getSessionFile());
+        nextCtx.ui.notify(`Switched to ${mechPaneLabel()}`, "info");
+      },
+    });
+    if (result.cancelled) ctx.ui.notify("Pane switch cancelled", "info");
+    return;
+  }
   if (cmd === "new" || cmd === "c" || cmd === "create") {
     const parentSession = current ?? undefined;
     const result = await ctx.newSession({
