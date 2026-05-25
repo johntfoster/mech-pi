@@ -8,9 +8,9 @@ For prompt editing and tmux-like copy-mode keys, see [keybindings.md](keybinding
 
 Ingest the current LaTeX repository and write `.mechpi/paper-map.json`. If compiled `.aux` files are present, the map also records label-to-equation-number data from `\newlabel` entries.
 
-### `/mechedit query`
+### `/mechedit [--inline|--external] query`
 
-Find a likely manuscript location from a natural-language query, equation label, rendered equation number already present in the paper map, or `file.tex:line` reference and open it in an external editor.
+Find a likely manuscript location from a natural-language query, equation label, rendered equation number already present in the paper map, or `file.tex:line` reference and open it in an editor. The default is the inline modal source editor; `--external` launches your configured external editor.
 
 Examples:
 
@@ -21,18 +21,23 @@ Examples:
 /mechedit sections/model.tex:120
 ```
 
-This command uses the paper map plus lexical/semantic-ish scoring over equation source, labels, known equation numbers, section headings, and nearby prose. It then launches an external editor at the best matching line. Direct `file.tex:line` references are opened without searching.
+This command freshly rebuilds the paper map from the detected root, preferring `main.tex`, and traverses linked TeX files (`\input`, `\include`, `\subfile`, and common import-style commands) before scoring filenames, equation source, labels, known equation numbers, section headings, and nearby prose. That means chapters and appendices included from `main.tex` participate in the same fuzzy match search. Direct `file.tex:line` references are opened without searching; filename matches open the whole file.
 
-By default it uses `MECHPI_EDITOR`, `VISUAL`, `EDITOR`, or `nvim`. For GUI editors such as VS Code/Codium it uses the editor's line-opening arguments. For terminal editors, `mech-pi` opens a new Kitty window when Kitty is available. You can override the terminal launcher with `MECHPI_EDITOR_TERMINAL`.
+While typing `/mechedit ...` in the prompt, autocomplete offers the same fuzzy filename/location matches. `Tab` or Down moves the highlighted completion forward, `Shift-Tab` or Up moves backward, and `Enter` opens the highlighted match directly. For fuzzy prompt searches submitted without choosing an autocomplete row, `/mechedit` opens a selector showing the matching filenames/locations. Use `Tab`, `j`, or Down to move forward; `Shift-Tab`, `k`, or Up to move backward; `Enter` opens the highlighted file/location; `q` or `Esc` cancels.
+
+Inline mode shows source line numbers from the original document, positions the cursor at the matched line, supports the shared modal editing keys, LaTeX/BibTeX-aware syntax highlighting, fuzzy `Tab` completions for commands/refs/cites/environments/symbols, `:<line>` source-line jumps, `:w`, and `:wq`/`Ctrl+S`. It refuses to overwrite the file if it changed on disk while the popup was open.
+
+External mode uses `MECHPI_EDITOR`, `VISUAL`, `EDITOR`, or `nvim`. For GUI editors such as VS Code/Codium it uses the editor's line-opening arguments. For terminal editors, `mech-pi` opens a new Kitty window when Kitty is available. You can override the terminal launcher with `MECHPI_EDITOR_TERMINAL`. Use `--external` for a one-off external editor launch, or set `MECHPI_EDIT_MODE=external` to make external mode the default.
 
 Useful settings:
 
 ```bash
 export MECHPI_EDITOR=nvim
 export MECHPI_EDITOR_TERMINAL=kitty
+export MECHPI_EDIT_MODE=external # optional: make /mechedit use an external editor by default
 ```
 
-Embedding a live `nvim` session inside pi's TUI is not currently supported reliably; launching an external terminal/editor is the intended workflow. After editing, return to pi and run `/mechmap` if you want to force-refresh the paper map cache immediately.
+Embedding a live `nvim` session inside pi's TUI is not currently supported reliably. Use inline mode for the default integrated modal source-editing popup, or external mode for your normal editor. Inline saves rebuild `.mechpi/paper-map.json`; after external edits, return to pi and run `/mechmap` if you want to force-refresh the cache immediately.
 
 ### `/mecheqedit eq:label`
 
@@ -80,7 +85,7 @@ Behavior:
 - If multiple citations are checked, all selected entries are added to the `.bib` file when needed and inserted as one citation command at the source-grounded TeX location.
 - Auto-inserts only when metadata and TeX location are high confidence; otherwise asks for confirmation. If no high-confidence TeX location can be determined, `mech-pi` adds/reuses the BibTeX entry and opens an external editor at the closest likely source location for manual citation placement.
 - `--to-bib` / `-b`: add/reuse selected citation(s) in the bibliography only; do not edit TeX.
-- `--keep-local` / `-l`: copy a matching local paper from `$HOME`, or download DOI/URL content when possible, into `.mechpi/ingest/sources/` for later `/mechingest` use. When a stored document is found, `mech-pi` adds/updates a `file = {...}` field in the BibTeX entry for faster future lookup.
+- `--keep-local` / `-l`: store a matching local paper from `$HOME` (symlinked into `.mechpi/ingest/sources/` when possible), or download DOI/URL content when possible, for later `/mechingest` use. When a stored document is found, `mech-pi` adds/updates a `file = {...}` field in the BibTeX entry for faster future lookup.
 
 Example:
 
@@ -126,28 +131,36 @@ Keys:
 - type text or use command-line autocomplete after `/mechingest`: refine fuzzy search over local `.bib` entries and local files in the current working directory only
 - `Esc` from the selector locks focus to the search box for editing; `Enter` from the search box returns focus to the selector rows
 - while search is focused, `j` or `q` cancels and returns to the prompt
-- `Space`: toggle selection; a green `✓` means already ingested in the vector store, while a gray `✓` means staged for ingestion. Unchecking an already-ingested item removes it from the next rebuilt vector store and deletes that source's cached text/source artifacts.
-- `j`/`k`, arrows, or `Tab`/`Shift-Tab`: move the highlighted row while selector rows are focused
-- `l`: open a summary of the actual currently stored/extracted source for an already-ingested item
-- second `l` from the summary: open the stored source document externally with `MECHPI_DOCUMENT_VIEWER`, `MECHPI_PDF_VIEWER`, or `xdg-open`
-- `h`: return from summary to the selection list
-- `Enter`: rebuild the ingest store from the currently selected items
-- `q` or root-list `h`: cancel
+- `j`/`k`, arrows, or `Tab`/`Shift-Tab`: move the highlighted row while selector rows are focused.
+- `l`: drill in. On an unrectified BibTeX reference, this starts the source-finding sequence; on an already staged/ingested item, it opens the stored/extracted-source summary. Progressive source-confirmation popups are foreground drill layers, offset slightly from the selector; use `h`/`q`/`Esc` to back out of a layer.
+- `Space`: toggle/select. For BibTeX references, this also first rectifies/confirms the source file, and only then applies the gray staged `✓`. A green `✓` means already ingested in the vector store, while a gray `✓` means confirmed and staged for ingestion. Unchecking an item removes it from the next rebuilt vector store and deletes that source's cached text/source artifacts.
+- inside candidate-source lists, `j`/`k` move, `l` opens the highlighted file for inspection, `Space`/`Enter` accepts it, and `h` backs out.
+- from a summary, `l` opens the stored source document externally with `MECHPI_DOCUMENT_VIEWER`, `MECHPI_PDF_VIEWER`, or `xdg-open`; `h` returns to the selection list.
+- `Enter`: rebuild the ingest store from the currently selected items.
+- `q`: cancel.
 
-For selected `.bib` references, `mech-pi` uses a strict source order:
+For selected `.bib` references, `mech-pi` rectifies the source file before staging. Pressing `Space` does not produce the gray staged check until a source has been confirmed by the user. The order is:
 
-1. Check explicit BibTeX `file`/`pdf` paths first, and accept them only after verifying against BibTeX/Crossref DOI metadata such as title or DOI.
-2. Query DOI metadata when a DOI is present, then try to download the paper through DOI/URL resolution and common PDF links on the landing page. Downloaded PDFs must still pass metadata verification.
-3. Only if DOI/URL download fails, run a broad but bounded `$HOME` search (`MECHPI_HOME_SEARCH_LIMIT`, default 25000 files; `MECHPI_HOME_SEARCH_NAME_LIMIT`, default 10000 filename matches) and score all candidates to select the best metadata match rather than stopping at the first plausible filename. Filename search uses author family names, distinctive title words, and DOI fragments, then verifies extracted PDF/text front matter. A candidate is accepted only if its extracted metadata tightly matches the expected title/DOI/venue/year/author evidence, including near-title proximity rather than scattered keyword hits. If the BibTeX/Crossref metadata says the source is a journal article, presentation/slide-deck-like PDFs are rejected, and a DOI mention alone is not sufficient because slide decks/books often contain article DOIs in references. If this finds a verified local file, `mech-pi` surgically adds/updates the BibTeX `file = {...}` field for future runs.
-4. If no verified document or downloadable PDF is available, or if multiple plausible local matches are ambiguous, the source is marked `needs-clarification` and is not ingested. `mech-pi` should prefer asking for clarification over putting a doubtful paper into the vector store.
+1. If a BibTeX `file = {...}` field is present, `mech-pi` opens a foreground drill-down choice layer asking whether to reuse it or do a new search. The reuse option is highlighted by default, so pressing `l` or `Enter` accepts the existing file quickly.
+2. If a new search is needed, `mech-pi` first tries a direct DOI/URL PDF download and asks the user to confirm the downloaded source before staging.
+3. If no direct download is confirmed, `mech-pi` offers a manual filepath entry before doing filesystem scans.
+4. If no manual filepath is supplied, `mech-pi` searches preferred paths first. Configure these with `MECHPI_INGEST_PREFERRED_PATHS` or `MECHPI_PREFERRED_PATHS` using your OS path separator (defaults to `~/Downloads` and `~/Documents/References`). This search shows status/progress while finding and scoring candidates, then shows the top five ranked source files.
+5. Only after those cheaper options fail or are declined does `mech-pi` ask whether to run the slower broad `$HOME` search (`MECHPI_HOME_SEARCH_LIMIT`, default 25000 files; `MECHPI_HOME_SEARCH_NAME_LIMIT`, default 10000 filename matches). The default answer is no. If accepted, it again shows progress and presents top ranked candidates.
+6. If none of the top five candidates is correct, choose the final `None of these — provide a file path` row. The path prompt supports fuzzy `Tab` completion over searched document paths and accepts `Enter`.
+7. Only confirmed choices receive the gray staged check. As soon as a source file is accepted, `mech-pi` adds/updates the BibTeX `file = {...}` field. When the selector exits with `Enter`, confirmed local files are symlinked into `.mechpi/ingest/sources/` when possible (falling back to copy only if symlinks fail or for temporary web downloads), extracted to text, and embedded into the rebuilt vector store.
+8. If no source is confirmed, the reference is not staged and therefore is not ingested. `mech-pi` should prefer asking for clarification over putting a doubtful paper into the vector store.
+
+Filename search uses author family names, distinctive title words, and DOI fragments, then verifies extracted PDF/text front matter. Candidate scoring checks title/DOI/venue/year/author evidence, including near-title proximity rather than scattered keyword hits. If the BibTeX/Crossref metadata says the source is a journal article, presentation/slide-deck-like PDFs are down-ranked/rejected, and a DOI mention alone is not sufficient because slide decks/books often contain article DOIs in references.
 
 PDFs are converted with `pdftotext` when available; OCR is noted as unavailable when embedded text extraction fails.
 
 While rebuilding, `/mechingest` shows a status-line progress bar through extraction, chunking, embedding, and writing `.mechpi/ingest/vector-store.json`.
 
-Future prompts in the same project automatically embed the new query, retrieve relevant chunks from `.mechpi/ingest/vector-store.json`, and add them to the model context as reference material. The store uses real text embeddings when available: by default `mech-pi` uses the free/open-source Python `sentence-transformers` backend with `sentence-transformers/all-MiniLM-L6-v2`, installed into the package-local `.mechpi-python/` environment by `npm postinstall`; set `MECHPI_PYTHON` to another Python, `MECHPI_EMBED_MODEL` to another local/Hugging Face model, `MECHPI_EMBED_PROVIDER=openai` for OpenAI embeddings, or `MECHPI_EMBED_PROVIDER=command` with `MECHPI_EMBED_COMMAND` for a custom local embedding command. If embeddings are unavailable, the store records the error and temporarily falls back to lexical retrieval.
+Future prompts in the same project can call the `mech_retrieve` tool to embed a query, retrieve relevant chunks from `.mechpi/ingest/vector-store.json`, and add only those chunks to the model context as reference material. The store uses real text embeddings when available: by default `mech-pi` uses the free/open-source Python `sentence-transformers` backend with `sentence-transformers/all-MiniLM-L6-v2`, installed into the package-local `.mechpi-python/` environment by `npm postinstall`; set `MECHPI_PYTHON` to another Python, `MECHPI_EMBED_MODEL` to another local/Hugging Face model, `MECHPI_EMBED_PROVIDER=openai` for OpenAI embeddings, or `MECHPI_EMBED_PROVIDER=command` with `MECHPI_EMBED_COMMAND` for a custom local embedding command. If embeddings are unavailable, the store records the error and temporarily falls back to lexical retrieval.
 
-The command also creates or updates a local `AGENTS.md` block instructing future agents to use the injected vector-store RAG context first, and to inspect `.mechpi/ingest/` before broad filesystem searches when more retrieval is needed. Running `/mechingest` again lets you add or unselect items and rebuilds the store.
+Automatic retrieval injection is off by default so retrieved chunks are not sent with every API request. Set `MECHPI_AUTO_RAG=1` or `MECHPI_AUTO_RETRIEVE=1` to restore automatic per-prompt retrieval into `MECH-PI INGESTED REFERENCE CONTEXT`.
+
+The command also creates or updates a local `AGENTS.md` block instructing future agents to use `mech_retrieve` for the vector-store RAG context before broad filesystem searches. Running `/mechingest` again lets you add or unselect items and rebuilds the store.
 
 Example:
 
@@ -206,6 +219,16 @@ Parameters:
 
 Searches all ingested TeX files for a macro, symbol, or text fragment.
 
+### `mech_retrieve`
+
+Queries `.mechpi/ingest/vector-store.json` and returns only the top relevant ingested reference chunks, instead of sending the whole vector store to the model.
+
+Parameters:
+
+- `query: string` — retrieval query.
+- `topK?: number` — number of chunks to return; defaults to 6, max 20.
+- `maxCharsPerChunk?: number` — truncation limit per returned chunk; defaults to 1400, max 4000.
+
 ### `mech_check`
 
 Runs lightweight checks for references, citations, duplicate labels, TODOs, and simple index red flags.
@@ -222,8 +245,12 @@ Opens the compiled PDF.
 
 - `MECHPI_EDITOR` — preferred external editor for `/mechedit` and low-confidence `/mechaddcite` placement; falls back to `VISUAL`, `EDITOR`, then `nvim`.
 - `MECHPI_EDITOR_TERMINAL` — terminal launcher for terminal editors; defaults to Kitty when available.
+- `MECHPI_EDIT_MODE=external` — make `/mechedit` use the configured external editor by default; otherwise inline modal editing is the default. Use `/mechedit --inline ...` or `/mechedit --external ...` for a one-off override.
 - `MECHPI_PDF_VIEWER` — viewer command for `/mechpreview`, `mech_preview_pdf`, and `/mechingest` source opening when `MECHPI_DOCUMENT_VIEWER` is unset.
 - `MECHPI_DOCUMENT_VIEWER` — viewer command for opening stored source documents from `/mechingest`; defaults to `MECHPI_PDF_VIEWER` then `xdg-open`.
+- `MECHPI_INGEST_PREFERRED_PATHS` / `MECHPI_PREFERRED_PATHS` — path-list of directories to search before asking about a broad `$HOME` search; defaults to `~/Downloads` and `~/Documents/References`.
+- `MECHPI_PREFERRED_SEARCH_LIMIT` / `MECHPI_PREFERRED_SEARCH_NAME_LIMIT` — preferred-path search limits; defaults to 10000 and 5000.
+- `MECHPI_AUTO_RAG=1` / `MECHPI_AUTO_RETRIEVE=1` — opt in to automatic per-prompt retrieval injection from `.mechpi/ingest/vector-store.json`; off by default so retrieval normally happens only when `mech_retrieve` is called.
 - `BROWSER` — browser command for the Google Scholar manual fallback and detail-page `l` web opening in `/mechaddcite`; defaults to `xdg-open`.
 - `MECHPI_PROMPT_HISTORY_LIMIT` — number of persistent prompts to keep in `.mechpi/prompt-history.json`; defaults to 100.
 - `MECHPI_PREVIEW_MAX_QUALITY=1` — experimental maximum-quality preview mode. It raises inline LaTeX DPI to 2400 and makes equation-editor adaptive rendering target much larger rasters. This is slower and can create large terminal image payloads, but is useful for comparing sharpness.

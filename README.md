@@ -7,11 +7,11 @@
 - Source-grounded research mode: the `.tex` files win over stale chat context.
 - `.mechpi/paper-map.json` cache with root file, included TeX files, labels, refs, citations, equations, equation numbers from `.aux`, macros, bibliography keys, TODOs, and warnings.
 - Equation focus by label, rendered PDF equation number, or source fragment.
-- `/mechedit` natural-language/location search that opens the likely manuscript spot in an external editor.
+- `/mechedit` natural-language/location search that opens the likely manuscript spot in an external editor or optional inline modal editor.
 - Interactive equation editor with compiled/typeset PNG preview using the paper's actual LaTeX preamble.
 - Compile/preview loop for LaTeX manuscripts.
 - Citation workflows: find candidate papers, insert citations/BibTeX, open known references, and keep verified local copies.
-- Reference ingestion/RAG: select local references/files, extract text, embed chunks when possible, and inject relevant context into later prompts.
+- Reference ingestion/RAG: select local references/files, extract text, embed chunks when possible, and retrieve only relevant chunks on demand with `mech_retrieve`.
 - Vim-style modal prompt editing plus tmux-like full-screen copy mode for running outside tmux.
 - Copy-mode support for inline rendered equation images: yank LaTeX source or copy the PNG image itself.
 - Optional local speech-to-text prompt input with push-to-talk and wake-word integration hooks.
@@ -71,14 +71,14 @@ See [docs/terminal-images.md](docs/terminal-images.md) for SSH, Kitty, and tmux 
 
 ```text
 /mechmap [root.tex]       ingest and cache the paper map, including aux equation numbers when available
-/mechedit query          semantic-ish search and open an external editor
+/mechedit query          fuzzy search and open inline editor (--external for external editor)
 /mecheqedit eq:label     edit a focused equation block in-terminal
 /mecheqedit number:2.14  edit by rendered PDF equation number
 /mecheqedit contains:... edit the first equation containing a fragment
 /mechaddcite prompt      find/select citation(s), update .bib, optionally insert into TeX or keep local copy
 /mechciteedit query      edit a local BibTeX entry with a rendered reference preview
 /mechgotocite query      fuzzy search local .bib entries and open the best paper website
-/mechingest keywords     select refs/files, extract text, and build a session retrieval store
+/mechingest keywords     select refs/files, extract text, and build a local retrieval store
 /mechcompile             run latexmk on the detected root and refresh aux equation numbers
 /mechvoice status        configure/use local speech-to-text prompt input
 /mechpreview             open root PDF
@@ -87,7 +87,7 @@ See [docs/terminal-images.md](docs/terminal-images.md) for SSH, Kitty, and tmux 
 
 See [docs/tools-and-commands.md](docs/tools-and-commands.md).
 
-`/mechingest` builds `.mechpi/ingest/vector-store.json` with text embeddings when an embedding backend is available. By default it uses the free/open-source Python `sentence-transformers` backend (`sentence-transformers/all-MiniLM-L6-v2`) from the package-local `.mechpi-python/` environment installed by `npm postinstall`; configure `MECHPI_PYTHON`, `MECHPI_EMBED_MODEL`, `MECHPI_EMBED_PROVIDER=openai`, or `MECHPI_EMBED_PROVIDER=command`/`MECHPI_EMBED_COMMAND` as needed. Its selector distinguishes already-ingested green `✓` items from gray staged items, lets you summarize actual extracted text and open stored source documents externally, and refuses doubtful BibTeX/document matches rather than ingesting the wrong paper. It also creates/updates a project-local `AGENTS.md` block so future agents treat the vector-store RAG context as first-pass retrieval instead of doing redundant broad text searches.
+`/mechingest` builds `.mechpi/ingest/vector-store.json` with text embeddings when an embedding backend is available. Its source-confirmation flow now uses foreground h/l drill-down popup layers so each progressive prompt sits visually above the selector. By default it uses the free/open-source Python `sentence-transformers` backend (`sentence-transformers/all-MiniLM-L6-v2`) from the package-local `.mechpi-python/` environment installed by `npm postinstall`; configure `MECHPI_PYTHON`, `MECHPI_EMBED_MODEL`, `MECHPI_EMBED_PROVIDER=openai`, or `MECHPI_EMBED_PROVIDER=command`/`MECHPI_EMBED_COMMAND` as needed. Its selector distinguishes already-ingested green `✓` items from gray staged items, lets you summarize actual extracted text and open stored source documents externally, and only gives a BibTeX reference the gray staged check after the source file has been rectified: reuse a BibTeX `file` field, confirm a direct web download, enter a filepath, confirm a preferred-path match, or explicitly approve a broader `$HOME` search. Preferred paths are configurable with `MECHPI_INGEST_PREFERRED_PATHS`/`MECHPI_PREFERRED_PATHS` and default to `~/Downloads` and `~/Documents/References`. Filesystem searches show progress while scanning/scoring. Confirmed local sources are symlinked into `.mechpi/ingest/sources/` when possible to avoid duplicate PDF storage, while extracted text is still written under `.mechpi/ingest/text/`. Press `Enter` to exit the selector and build the vector store from the confirmed staged files. Later turns should use the `mech_retrieve` tool to query the local store and send only top matching chunks to the model. Set `MECHPI_AUTO_RAG=1` (or `MECHPI_AUTO_RETRIEVE=1`) only if you want automatic per-prompt retrieval injected into the system prompt.
 
 ## Prompt keybindings
 
@@ -123,7 +123,7 @@ review section 3 like a thermodynamics referee
 
 ## Manuscript and equation editing
 
-Open a likely manuscript location in an external editor:
+Open a likely manuscript location in the integrated modal source editor, or use `--external` for your configured external editor. Prompt searches rebuild the map from `main.tex`, score filenames and text across linked chapters/appendices, then show a selector when there are multiple fuzzy matches. Filename matches open the whole file:
 
 ```text
 /mechedit entropy inequality
@@ -152,7 +152,7 @@ export VISUAL=nvim
 export EDITOR=nvim
 ```
 
-`/mechedit` launches an external editor session rather than embedding nvim inside pi's TUI. For terminal editors, it opens a new Kitty window when available; set `MECHPI_EDITOR_TERMINAL` to override the terminal launcher.
+By default, `/mechedit` opens the full source file in pi's modal popup editor with source line numbers, LaTeX/BibTeX-aware highlighting, fuzzy `Tab` completions for commands/refs/cites/environments/symbols, `:<line>` jumps, `:w`, and `:wq`/`Ctrl+S` saving. Use `/mechedit --external query` or `MECHPI_EDIT_MODE=external` to launch an external editor session. For terminal editors, external mode opens a new Kitty window when available; set `MECHPI_EDITOR_TERMINAL` to override the terminal launcher.
 
 See [docs/equation-editor.md](docs/equation-editor.md).
 

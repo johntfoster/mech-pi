@@ -20,7 +20,7 @@ The extension should help users:
 ## Core principles
 
 - Trust source files over conversation memory.
-- When a project has `.mechpi/ingest/vector-store.json`, use the injected embedding-based ingest context as first-pass RAG before broad filesystem searches; `/mechingest` should maintain a local `AGENTS.md` block that documents this.
+- When a project has `.mechpi/ingest/vector-store.json`, use the `mech_retrieve` tool for first-pass RAG before broad filesystem searches; `/mechingest` should maintain a local `AGENTS.md` block that documents this.
 - For mechanics/theory claims, cite file paths, line numbers, and equation labels where possible.
 - Clearly distinguish assumptions, definitions, derivations, constitutive restrictions, and conjectures.
 - Keep the extension useful for research writing, not just code editing.
@@ -63,9 +63,10 @@ If user-facing behavior changes, update docs, especially:
 
 ## Manuscript editing behavior
 
-- `/mechedit` should search from source-grounded paper-map data and open an external editor at the best matching `file:line`.
-- Prefer external editor launching over embedding a live nvim session inside pi's TUI, which is not currently reliable.
-- Honor `MECHPI_EDITOR`, then `VISUAL`, then `EDITOR`, then `nvim`; use `MECHPI_EDITOR_TERMINAL` or Kitty for terminal editors when appropriate.
+- `/mechedit` should search from source-grounded paper-map data and open the best matching `file:line`.
+- External mode remains the default for now. Honor `MECHPI_EDITOR`, then `VISUAL`, then `EDITOR`, then `nvim`; use `MECHPI_EDITOR_TERMINAL` or Kitty for terminal editors when appropriate.
+- `/mechedit --inline` and `MECHPI_EDIT_MODE=inline` open the integrated modal source editor. It should show source line numbers, LaTeX/BibTeX-aware highlighting, fuzzy Tab completions for LaTeX commands/refs/cites/environments/symbols, support `:<line>` jumps, refuse to overwrite files changed on disk while open, and rebuild `.mechpi/paper-map.json` after saves.
+- Prefer the integrated modal editor over embedding a live nvim session inside pi's TUI, which is not currently reliable.
 - For direct `file.tex:line` input, bypass scoring and open that exact location.
 - After changing search/open behavior, update `README.md`, `docs/tools-and-commands.md`, and this file.
 

@@ -1,6 +1,6 @@
 # Equation editor and rendered preview
 
-`/mecheqedit` and `mech_focus_equation` with `edit: true` open an equation-only editing panel. For broader manuscript edits, use `/mechedit query` to open an external editor at a likely source location.
+`/mecheqedit` and `mech_focus_equation` with `edit: true` open an equation-only editing panel. For broader manuscript edits, use `/mechedit query` to open an external editor at a likely source location, or `/mechedit --inline query` to open the integrated modal source editor.
 
 ## What appears
 
@@ -12,7 +12,7 @@
    - pi displays the PNG inline if the terminal supports image rendering.
    - If `.aux` data gives the equation's original PDF number, the isolated preview injects a temporary `\tag{...}` so the preview shows that number without editing the manuscript source.
    - The image is generated at high DPI and terminal-scaled by the current terminal width to preserve aspect ratio.
-2. A lower source editor containing the exact equation environment from the manuscript.
+2. A lower source editor containing the exact equation environment from the manuscript, with line numbers mapped back to the original source file and basic LaTeX highlighting.
 3. On save, the source block is replaced in-place and `.mechpi/paper-map.json` is rebuilt.
 
 ## Basic usage
@@ -74,6 +74,7 @@ Insert mode:
 
 Command mode:
 
+- `:<line>`: jump to a source line number shown in the gutter
 - `:w`: re-render the preview from the current buffer and keep editing
 - `:wq` or `:x`: accept the edit and save it back to the TeX source
 - `:q` or `:q!`: close/cancel the popup
@@ -83,11 +84,11 @@ Command mode:
 
 The preview is not currently re-rendered on every keystroke because rendering runs LaTeX, but `:w` provides an explicit refresh checkpoint. When the popup opens, `mech-pi` clears/suppresses existing assistant inline images so old Kitty image placements do not cover the editor. Number-based opening relies on compiled `.aux` files; when they are missing or stale, `mech-pi` attempts `latexmk` first and reports compilation errors if the number map cannot be refreshed.
 
-LaTeX command autocomplete is available in insert mode for backslash commands. Suggestions include common LaTeX commands and manuscript macros discovered from the paper map, including definitions from files such as `defs.tex`.
+LaTeX autocomplete is available in insert mode and uses the same fuzzy dropdown behavior as other mech-pi search locations. Backslash completions include common LaTeX commands and manuscript macros; `\ref{...}`/`\eqref{...}`/`\cref{...}` complete local labels; `\cite{...}`-style commands complete local BibTeX keys with title/author/year search text when available; `\begin{...}` and `\end{...}` complete environments; forced `Tab` completion can also surface symbols/macros seen in ingested equations.
 
 ## Relationship to `/mechedit`
 
-Use `/mecheqedit` when you want the focused equation-only popup with preview and exact-block replacement. Use `/mechedit` when you want to jump into the surrounding manuscript prose, section, or arbitrary source location in an external editor such as nvim or VS Code.
+Use `/mecheqedit` when you want the focused equation-only popup with preview and exact-block replacement. Use `/mechedit` when you want the surrounding manuscript prose, section, or arbitrary source location. By default `/mechedit` opens an external editor such as nvim or VS Code; `/mechedit --inline` opens the full source file in the same modal popup editor, with source line numbers and basic LaTeX/BibTeX highlighting.
 
 ## Render artifacts
 

@@ -16,6 +16,7 @@ Default typing mode. After commands, dialogs, and assistant responses return foc
 - `Esc`: switch to `NORMAL`
 - `Ctrl-s`: send the prompt
 - `Up` / `Down`: cycle persistent prompt history; if text is already typed, only prompts with that prefix are shown, e.g. `/mechaddcite` filters to previous `/mechaddcite...` prompts
+- In mech-pi fuzzy completions (`/mechedit`, `/mecheqedit`, `/mechciteedit`, `/mechgotocite`, `/mechingest`), matches appear below the prompt with the best match highlighted; `Tab`/`Down` and `Shift-Tab`/`Up` move the highlight, and `Enter` accepts the highlighted match and sends the command.
 - optional push-to-talk: set `MECHPI_VOICE_SPACE_HOLD=1`, then hold `Space` on an empty prompt; release `Space` to stop after a short grace period
 - `Ctrl-a` then `]`: enter full-screen copy mode
 
@@ -58,6 +59,12 @@ Visual mode selects text inside the prompt editor. `v` selects by character; `V`
 - `V`: toggle linewise visual selection
 
 Yanks are also sent to the system clipboard when `wl-copy`, `xclip`, or `xsel` is available.
+
+## Modal popup editors
+
+`/mechingest` uses foreground drill-down popup layers for source confirmation: `l` or `Enter` accepts/drills into the highlighted choice, while `h`, `q`, or `Esc` backs out to the previous layer.
+
+`/mecheqedit`, `/mechciteedit`, and `/mechedit --inline` use the same modal editing core as the prompt. Popup editors open in normal mode when pre-filled with existing text and in insert mode only when the editor buffer starts empty. Popup editors add source line numbers in the gutter when the buffer maps to a manuscript or bibliography file, use LaTeX/BibTeX-aware syntax highlighting, and provide fuzzy `Tab` dropdown completions for LaTeX commands, paper labels/refs, BibTeX cite keys, environments, and equation symbols where relevant. In command mode, `:<line>` jumps to the displayed source line; `:w` writes/refreshes when available; `:wq`, `:x`, or `Ctrl-s` save and close; `Ctrl-c` or `:q` cancel.
 
 ## Voice input
 

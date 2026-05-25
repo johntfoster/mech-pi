@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { AssistantMessageComponent, CustomEditor, DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { complete, StringEnum, type Message } from "@earendil-works/pi-ai";
-import { Container, Key, Markdown, Spacer, Text, deleteAllKittyImages, deleteKittyImage, getCapabilities, getCellDimensions, getImageDimensions, imageFallback, isKeyRelease, matchesKey, parseKey, renderImage, truncateToWidth, visibleWidth, type AutocompleteItem, type AutocompleteProvider, type EditorTheme, type Focusable, type TUI } from "@earendil-works/pi-tui";
+import { Container, Key, Markdown, Spacer, Text, deleteAllKittyImages, deleteKittyImage, getCapabilities, getCellDimensions, getImageDimensions, imageFallback, isKeyRelease, matchesKey, parseKey, renderImage, truncateToWidth, visibleWidth, type AutocompleteItem, type AutocompleteProvider, type EditorTheme, type Focusable, type OverlayHandle, type OverlayOptions, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import * as fs from "node:fs/promises";
 import * as fss from "node:fs";
@@ -98,6 +98,12 @@ const SearchParams = Type.Object({
   includeContext: Type.Optional(Type.Boolean({ description: "Include one-line context (default true)" })),
 });
 
+const IngestRetrieveParams = Type.Object({
+  query: Type.String({ description: "Search query for the local .mechpi/ingest vector store" }),
+  topK: Type.Optional(Type.Number({ description: "Number of chunks to return (default 6, max 20)" })),
+  maxCharsPerChunk: Type.Optional(Type.Number({ description: "Maximum characters per returned chunk (default 1400, max 4000)" })),
+});
+
 const CheckParams = Type.Object({
   kind: Type.Optional(StringEnum(["all", "latex", "mechanics", "indices"] as const)),
 });
@@ -114,12 +120,34 @@ function themeFg(theme: any, key: string, text: string): string {
   return typeof theme?.fg === "function" ? theme.fg(key, text) : text;
 }
 
+function themeBg(theme: any, key: string, text: string): string {
+  return typeof theme?.bg === "function" ? theme.bg(key, text) : `\x1b[7m${text}\x1b[27m`;
+}
+
+function highlightSelectedAutocompleteLine(theme: any, line: string, width: number): string {
+  const plain = truncateToWidth(stripTerminalEscapes(line), width, "");
+  const padded = plain + " ".repeat(Math.max(0, width - visibleWidth(plain)));
+  return themeBg(theme, "selectedBg", padded);
+}
+
+function commonStringPrefix(values: string[]): string {
+  if (values.length === 0) return "";
+  let prefix = values[0] ?? "";
+  for (const value of values.slice(1)) {
+    let i = 0;
+    while (i < prefix.length && i < value.length && prefix[i] === value[i]) i++;
+    prefix = prefix.slice(0, i);
+    if (!prefix) break;
+  }
+  return prefix;
+}
+
 function mechPiEditorTheme(theme: any): EditorTheme {
   return {
     borderColor: (s: string) => typeof theme?.borderColor === "function" ? theme.borderColor(s) : themeFg(theme, "accent", s),
     selectList: {
       selectedPrefix: (s: string) => themeFg(theme, "accent", s),
-      selectedText: (s: string) => themeFg(theme, "accent", s),
+      selectedText: (s: string) => themeBg(theme, "selectedBg", s),
       description: (s: string) => themeFg(theme, "muted", s),
       scrollInfo: (s: string) => themeFg(theme, "dim", s),
       noMatch: (s: string) => themeFg(theme, "warning", s),
@@ -131,7 +159,9 @@ async function exists(p: string): Promise<boolean> {
   try { await fs.access(p); return true; } catch { return false; }
 }
 
-async function walk(dir: string, ignored = new Set([".git", "node_modules", ".pi", ".mechpi", "build"])): Promise<string[]> {
+const DEFAULT_WALK_IGNORES = new Set([".git", "node_modules", ".pi", ".mechpi", ".mechpi-python", ".venv", "venv", "build", "dist", "coverage"]);
+
+async function walk(dir: string, ignored = DEFAULT_WALK_IGNORES): Promise<string[]> {
   const out: string[] = [];
   for (const ent of await fs.readdir(dir, { withFileTypes: true })) {
     if (ignored.has(ent.name)) continue;
@@ -140,6 +170,25 @@ async function walk(dir: string, ignored = new Set([".git", "node_modules", ".pi
     else out.push(p);
   }
   return out;
+}
+
+async function hasTexFileShallow(dir: string, maxDepth = 2): Promise<boolean> {
+  if (await exists(path.join(dir, "main.tex"))) return true;
+  async function visit(current: string, depth: number): Promise<boolean> {
+    let entries: fss.Dirent[];
+    try { entries = await fs.readdir(current, { withFileTypes: true }); }
+    catch { return false; }
+    for (const ent of entries) {
+      if (ent.isFile() && ent.name.endsWith(".tex")) return true;
+    }
+    if (depth >= maxDepth) return false;
+    for (const ent of entries) {
+      if (!ent.isDirectory() || DEFAULT_WALK_IGNORES.has(ent.name) || ent.name.startsWith(".")) continue;
+      if (await visit(path.join(current, ent.name), depth + 1)) return true;
+    }
+    return false;
+  }
+  return visit(dir, 0);
 }
 
 async function readText(p: string): Promise<string> { return await fs.readFile(p, "utf8"); }
@@ -160,6 +209,16 @@ function dominantLineEnding(text: string): "\n" | "\r\n" | "\r" {
 function restoreLineEndingsForSource(text: string, sourceText: string): string {
   const eol = dominantLineEnding(sourceText);
   return normalizeEditorLineEndings(text).replace(/\n/g, eol);
+}
+
+function firstUnescapedPercent(line: string): number {
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] !== "%") continue;
+    let slashes = 0;
+    for (let j = i - 1; j >= 0 && line[j] === "\\"; j--) slashes++;
+    if (slashes % 2 === 0) return i;
+  }
+  return -1;
 }
 
 async function detectRoot(cwd: string, requested?: string): Promise<string | undefined> {
@@ -234,25 +293,56 @@ function sameEquationNumber(a: string, b: string): boolean {
   return normalizeEquationNumber(a) === normalizeEquationNumber(b);
 }
 
+function texInputPathCandidates(baseDir: string, raw: string): string[] {
+  const clean = raw.trim().replace(/^['"]|['"]$/g, "");
+  if (!clean) return [];
+  const base = path.isAbsolute(clean) ? clean : path.resolve(baseDir, clean);
+  const ext = path.extname(base);
+  return unique(ext ? [base] : [`${base}.tex`, base]);
+}
+
+function texLinkedFilesFromSource(text: string, dir: string): string[] {
+  const links: string[] = [];
+  const txt = stripComments(text);
+  const oneArg = /\\(?:input|include|subfile|InputIfFileExists)\s*\{/g;
+  let m: RegExpExecArray | null;
+  while ((m = oneArg.exec(txt))) {
+    const open = m.index + m[0].lastIndexOf("{");
+    const fileArg = readBraced(txt, open);
+    if (!fileArg) continue;
+    links.push(...texInputPathCandidates(dir, fileArg.value));
+    oneArg.lastIndex = fileArg.end;
+  }
+
+  const twoArg = /\\(?:import|subimport|inputfrom|subinputfrom|includefrom|subincludefrom)\s*\{/g;
+  while ((m = twoArg.exec(txt))) {
+    const firstOpen = m.index + m[0].lastIndexOf("{");
+    const dirArg = readBraced(txt, firstOpen);
+    if (!dirArg) continue;
+    let pos = dirArg.end;
+    while (/\s/.test(txt[pos] ?? "")) pos++;
+    const fileArg = readBraced(txt, pos);
+    if (!fileArg) continue;
+    links.push(...texInputPathCandidates(path.resolve(dir, dirArg.value.trim()), fileArg.value));
+    twoArg.lastIndex = fileArg.end;
+  }
+  return unique(links);
+}
+
 async function discoverTexClosure(cwd: string, root?: string): Promise<string[]> {
   if (!root) return (await walk(cwd)).filter(p => p.endsWith(".tex"));
   const seen = new Set<string>();
+  const ordered: string[] = [];
   async function visit(file: string) {
     const abs = path.resolve(file);
     if (seen.has(abs) || !(await exists(abs))) return;
     seen.add(abs);
-    const dir = path.dirname(abs);
-    const txt = stripComments(await readText(abs));
-    const re = /\\(?:input|include|subfile)\s*\{([^}]+)\}/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(txt))) {
-      const raw = m[1].trim();
-      const child = path.resolve(dir, raw.endsWith(".tex") ? raw : `${raw}.tex`);
-      await visit(child);
-    }
+    ordered.push(abs);
+    const text = await readText(abs).catch(() => "");
+    for (const child of texLinkedFilesFromSource(text, path.dirname(abs))) await visit(child);
   }
   await visit(root);
-  return Array.from(seen);
+  return ordered;
 }
 
 function extractSymbols(tex: string): string[] {
@@ -843,56 +933,133 @@ ${previewTex}
   return { base64 };
 }
 
+type LatexCompletionKind = "command" | "macro" | "label" | "citation" | "symbol" | "environment";
+type LatexAutocompleteItem = AutocompleteItem & { kind?: LatexCompletionKind; searchText?: string; priority?: number };
+type LatexAutocompleteContext = { prefix: string; query: string; kinds: Set<LatexCompletionKind> };
+
+const LATEX_REF_COMMANDS = new Set(["ref", "eqref", "autoref", "cref", "Cref", "pageref", "nameref", "vref", "Vref", "subref"]);
+const LATEX_CITE_COMMANDS = new Set(["cite", "citet", "citep", "citealp", "citeauthor", "citeyear", "citeyearpar", "nocite", "parencite", "textcite", "autocite", "supercite", "footcite", "fullcite"]);
+const LATEX_ENVIRONMENTS = ["abstract", "align", "align*", "aligned", "array", "cases", "center", "description", "displaymath", "document", "enumerate", "equation", "equation*", "figure", "figure*", "gather", "gather*", "itemize", "matrix", "multline", "multline*", "pmatrix", "proof", "split", "subequations", "table", "table*", "tabular", "theorem", "verbatim", "vmatrix"];
+
 function latexAutocompleteProvider(items: AutocompleteItem[]): AutocompleteProvider {
-  function prefixAt(lines: string[], cursorLine: number, cursorCol: number): string | null {
+  const latexItems = items as LatexAutocompleteItem[];
+
+  function contextAt(lines: string[], cursorLine: number, cursorCol: number, force = false): LatexAutocompleteContext | null {
     const line = lines[cursorLine] ?? "";
     const before = line.slice(0, cursorCol);
-    const m = before.match(/\\[A-Za-z@]*$/);
-    return m?.[0] ?? null;
+    const arg = before.match(/\\([A-Za-z@]+)\*?(?:\s*\[[^\]\n]*\])*\s*\{([^{}\n]*)$/);
+    if (arg) {
+      const command = arg[1] ?? "";
+      const content = arg[2] ?? "";
+      const segment = content.slice(content.lastIndexOf(",") + 1);
+      const query = segment.trimStart();
+      if (LATEX_CITE_COMMANDS.has(command)) return { prefix: query, query, kinds: new Set(["citation"]) };
+      if (LATEX_REF_COMMANDS.has(command) || command === "label") return { prefix: query, query, kinds: new Set(["label"]) };
+      if (command === "begin" || command === "end") return { prefix: query, query, kinds: new Set(["environment"]) };
+    }
+    const command = before.match(/\\[A-Za-z@]*$/)?.[0];
+    if (command !== undefined) return { prefix: command, query: command, kinds: new Set(["macro", "command"]) };
+    if (!force) return null;
+    const token = before.match(/[\\A-Za-z0-9:@*._/-]*$/)?.[0] ?? "";
+    const kinds: LatexCompletionKind[] = token.startsWith("\\")
+      ? ["macro", "command"]
+      : ["label", "citation", "symbol", "environment", "macro", "command"];
+    return { prefix: token, query: token, kinds: new Set(kinds) };
   }
+
+  function rank(query: string, item: LatexAutocompleteItem): number {
+    const q = query.toLowerCase();
+    const hay = `${item.label} ${item.value} ${item.searchText ?? ""} ${item.description ?? ""}`.toLowerCase();
+    if (!q) return item.priority ?? 1;
+    let score = fuzzySubsequenceScore(q, hay) + tokenScore(q, hay) * 60 + (item.priority ?? 0);
+    if (item.value.toLowerCase().startsWith(q) || item.label.toLowerCase().startsWith(q)) score += 250;
+    if (item.value.toLowerCase().includes(q) || item.label.toLowerCase().includes(q)) score += 100;
+    return score;
+  }
+
   return {
-    async getSuggestions(lines, cursorLine, cursorCol) {
-      const prefix = prefixAt(lines, cursorLine, cursorCol);
-      if (prefix === null) return null;
-      const q = prefix.toLowerCase();
-      const matches = items
-        .filter(item => item.value.toLowerCase().startsWith(q))
-        .slice(0, 80);
-      return matches.length ? { items: matches, prefix } : null;
+    async getSuggestions(lines, cursorLine, cursorCol, options) {
+      const ctx = contextAt(lines, cursorLine, cursorCol, options.force ?? false);
+      if (ctx === null) return null;
+      const matches = latexItems
+        .filter(item => item.kind && ctx.kinds.has(item.kind))
+        .map(item => ({ item, score: rank(ctx.query, item) }))
+        .filter(x => !ctx.query || x.score > 0)
+        .sort((a, b) => b.score - a.score || a.item.label.localeCompare(b.item.label))
+        .slice(0, 80)
+        .map(x => x.item);
+      return matches.length ? { items: matches, prefix: ctx.prefix } : null;
     },
     applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
       const next = [...lines];
       const line = next[cursorLine] ?? "";
       const start = cursorCol - prefix.length;
       next[cursorLine] = line.slice(0, start) + item.value + line.slice(cursorCol);
-      return { lines: next, cursorLine, cursorCol: start + item.value.length };
+      const firstEmptyBrace = item.value.indexOf("{}");
+      const cursorOffset = firstEmptyBrace >= 0 ? firstEmptyBrace + 1 : item.value.length;
+      return { lines: next, cursorLine, cursorCol: start + cursorOffset };
     },
     shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
-      return prefixAt(lines, cursorLine, cursorCol) !== null;
+      return contextAt(lines, cursorLine, cursorCol) !== null;
     },
   };
 }
 
-async function latexCompletionItems(ctx: ExtensionContext): Promise<AutocompleteItem[]> {
-  const common = [
-    "\\alpha", "\\beta", "\\gamma", "\\delta", "\\epsilon", "\\varepsilon", "\\theta", "\\lambda", "\\mu", "\\nu", "\\xi", "\\pi", "\\rho", "\\sigma", "\\tau", "\\phi", "\\varphi", "\\psi", "\\omega",
-    "\\Gamma", "\\Delta", "\\Theta", "\\Lambda", "\\Pi", "\\Sigma", "\\Phi", "\\Psi", "\\Omega",
-    "\\frac{}{}", "\\partial", "\\nabla", "\\cdot", "\\times", "\\otimes", "\\oplus", "\\leq", "\\geq", "\\neq", "\\approx", "\\equiv", "\\infty",
-    "\\left", "\\right", "\\begin{}", "\\end{}", "\\label{}", "\\eqref{}", "\\mathrm{}", "\\mathbf{}", "\\mathcal{}", "\\bar{}", "\\hat{}", "\\tilde{}",
+async function latexCompletionItems(ctx: ExtensionContext): Promise<LatexAutocompleteItem[]> {
+  const commonCommands = [
+    "\\alpha", "\\beta", "\\gamma", "\\delta", "\\epsilon", "\\varepsilon", "\\zeta", "\\eta", "\\theta", "\\vartheta", "\\iota", "\\kappa", "\\lambda", "\\mu", "\\nu", "\\xi", "\\pi", "\\varpi", "\\rho", "\\varrho", "\\sigma", "\\varsigma", "\\tau", "\\upsilon", "\\phi", "\\varphi", "\\chi", "\\psi", "\\omega",
+    "\\Gamma", "\\Delta", "\\Theta", "\\Lambda", "\\Xi", "\\Pi", "\\Sigma", "\\Upsilon", "\\Phi", "\\Psi", "\\Omega",
+    "\\frac{}{}", "\\dfrac{}{}", "\\tfrac{}{}", "\\sqrt{}", "\\partial", "\\nabla", "\\mathrm{}", "\\mathbf{}", "\\mathit{}", "\\mathsf{}", "\\mathtt{}", "\\mathcal{}", "\\mathbb{}", "\\operatorname{}", "\\text{}",
+    "\\cdot", "\\times", "\\otimes", "\\oplus", "\\circ", "\\bullet", "\\star", "\\leq", "\\geq", "\\neq", "\\approx", "\\sim", "\\simeq", "\\equiv", "\\propto", "\\in", "\\notin", "\\subset", "\\subseteq", "\\forall", "\\exists", "\\infty", "\\to", "\\mapsto", "\\left", "\\right",
+    "\\begin{}", "\\end{}", "\\item", "\\label{}", "\\ref{}", "\\eqref{}", "\\cref{}", "\\Cref{}", "\\autoref{}", "\\cite{}", "\\citet{}", "\\citep{}", "\\parencite{}", "\\textcite{}", "\\caption{}", "\\section{}", "\\subsection{}", "\\subsubsection{}", "\\paragraph{}", "\\emph{}", "\\textbf{}", "\\textit{}", "\\url{}", "\\href{}{}", "\\includegraphics{}", "\\input{}", "\\include{}",
+    "\\bar{}", "\\hat{}", "\\widehat{}", "\\tilde{}", "\\widetilde{}", "\\dot{}", "\\ddot{}", "\\vec{}", "\\overline{}", "\\underline{}",
   ];
   const map = await loadOrBuildMap(ctx).catch(() => undefined);
-  const macroItems = (map?.macros ?? []).map(m => ({
+  const bibEntries = map ? await loadBibEntries(ctx.cwd, map).catch(() => [] as BibEntry[]) : [];
+  const bibByKey = new Map(bibEntries.map(e => [e.key, e]));
+  const macroItems: LatexAutocompleteItem[] = (map?.macros ?? []).map(m => ({
     value: m.name,
     label: m.name,
-    description: `${m.file}:${m.line}${m.args ? ` ${m.args}` : ""}`,
+    kind: "macro",
+    priority: 25,
+    description: `macro • ${m.file}:${m.line}${m.args ? ` ${m.args}` : ""}`,
   }));
+  const labelItems: LatexAutocompleteItem[] = (map?.labels ?? []).map(l => ({
+    value: l.label,
+    label: l.label,
+    kind: "label",
+    priority: l.kind === "eq" ? 30 : 15,
+    description: `${l.kind || "label"} • ${l.file}:${l.line}`,
+  }));
+  const citationItems: LatexAutocompleteItem[] = (map?.bibKeys ?? []).map(b => {
+    const entry = bibByKey.get(b.key);
+    const title = entry?.fields.title ?? b.key;
+    const authors = entry?.fields.author ?? "";
+    const year = entry?.fields.year ?? entry?.fields.date?.match(/\d{4}/)?.[0] ?? "";
+    const venue = entry?.fields.journal ?? entry?.fields.journaltitle ?? entry?.fields.booktitle ?? "";
+    return {
+      value: b.key,
+      label: b.key,
+      kind: "citation" as const,
+      priority: 20,
+      searchText: entry ? `${title} ${authors} ${year} ${venue}` : undefined,
+      description: entry ? `${title}${year ? ` (${year})` : ""}${entry.file ? ` • ${entry.file}:${entry.line}` : ""}` : `BibTeX • ${b.file}:${b.line}`,
+    };
+  });
+  const symbolItems: LatexAutocompleteItem[] = unique((map?.equations ?? []).flatMap(e => e.symbols ?? [])).map(s => ({
+    value: s,
+    label: s,
+    kind: "symbol",
+    priority: s.startsWith("\\") ? 10 : 5,
+    description: "symbol/macro seen in equations",
+  }));
+  const environmentItems: LatexAutocompleteItem[] = LATEX_ENVIRONMENTS.map(value => ({ value, label: value, kind: "environment", priority: 10, description: "LaTeX environment" }));
+  const commandItems: LatexAutocompleteItem[] = commonCommands.map(value => ({ value, label: value, kind: "command", priority: 1, description: "LaTeX command" }));
   const seen = new Set<string>();
-  return [
-    ...macroItems,
-    ...common.map(value => ({ value, label: value, description: "LaTeX" })),
-  ].filter(item => {
-    if (seen.has(item.value)) return false;
-    seen.add(item.value);
+  return [...macroItems, ...labelItems, ...citationItems, ...symbolItems, ...environmentItems, ...commandItems].filter(item => {
+    const key = `${item.kind}:${item.value}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
     return true;
   });
 }
@@ -903,7 +1070,9 @@ async function saveEquationEdit(ctx: ExtensionContext, e: EquationInfo, newTex: 
   const first = source.indexOf(e.tex);
   if (first < 0) throw new Error(`Could not find the original equation block in ${e.file}; run mech_ingest and try again.`);
   if (source.indexOf(e.tex, first + e.tex.length) >= 0) throw new Error(`Equation source is not unique in ${e.file}; refusing automatic replacement.`);
+  if (!(await guardPathBeforeWrite(ctx, abs, `saving equation edit in ${e.file}`))) throw new Error("Cancelled by git guard.");
   await fs.writeFile(abs, source.slice(0, first) + newTex + source.slice(first + e.tex.length));
+  await autoCommitPaths(ctx, [abs], `Save equation edit in ${e.file}`);
   const map = await buildPaperMap(ctx.cwd);
   await writeMap(ctx.cwd, map);
   return `${e.file}:${e.lineStart}-${e.lineEnd}`;
@@ -925,7 +1094,10 @@ async function openEquationEditor(ctx: ExtensionContext, e: EquationInfo): Promi
       title,
       initialText: e.tex,
       autocompleteProvider: latexAutocompleteProvider(completions),
-      help: "Same edit keys as the prompt. Ctrl+R refreshes preview; :w writes+refreshes; :wq/Ctrl+S saves and closes; Ctrl+C/:q cancels.",
+      syntaxMode: "latex",
+      lineNumberStart: e.lineStart,
+      lineNumberLabel: e.file,
+      help: "Same edit keys as the prompt. Ctrl+R refreshes preview; :w writes+refreshes; :wq/Ctrl+S saves and closes; :<line> jumps by source line; Ctrl+C/:q cancels.",
       renderPreview: (width: number) => {
         const lines: string[] = [];
         lines.push(truncateToWidth(`Typeset LaTeX preview: ${e.label ?? "(unlabeled)"}`, width));
@@ -1310,6 +1482,12 @@ function installAssistantLatexPreviewRenderer() {
 type PromptMode = "insert" | "normal" | "visual" | "visualLine" | "command";
 
 type PromptYank = { text: string; lineWise: boolean };
+
+const MECH_FUZZY_COMPLETION_COMMAND_RE = /^\/(?:mechedit|mecheqedit|mechciteedit|mechgotocite|mechingest)(?:\s|$)/;
+
+function isMechFuzzyCompletionPromptText(text: string): boolean {
+  return MECH_FUZZY_COMPLETION_COMMAND_RE.test(text.trimStart());
+}
 
 function stripTerminalEscapes(text: string): string {
   return text
@@ -1714,6 +1892,8 @@ abstract class MechPiModalTextEditor extends CustomEditor {
   protected visualAnchor: number | null = null;
   protected yankBuffer: PromptYank | null = null;
   protected status = "INSERT";
+  private fishAutocompleteExplicit = false;
+  private ignoreDuplicateTabUntil = 0;
   protected commandBuffer = "";
   protected commandPrefix: ":" | "/" | "?" = ":";
   protected pendingCount = "";
@@ -1722,10 +1902,21 @@ abstract class MechPiModalTextEditor extends CustomEditor {
   protected pendingTextObject: { op: "d" | "y" | "c"; around: boolean; count: number } | null = null;
   protected lastFind: { command: "f" | "F" | "t" | "T"; char: string; count: number } | null = null;
   protected lastSearch: { pattern: string; backward: boolean } | null = null;
+  protected sourceLineStart?: number;
+  protected sourceLineLabel?: string;
+  protected syntaxMode?: ModalSyntaxMode;
+  protected uiTheme: any;
   private lastModalBackspaceAt = 0;
 
   constructor(tui: TUI, theme: any, keybindings: any) {
     super(tui, mechPiEditorTheme(theme), keybindings);
+    this.uiTheme = theme;
+  }
+
+  protected configureModalEditorFeatures(opts: { lineNumberStart?: number; lineNumberLabel?: string; syntaxMode?: ModalSyntaxMode }): void {
+    this.sourceLineStart = Number.isFinite(opts.lineNumberStart) ? Math.max(1, Math.floor(opts.lineNumberStart ?? 1)) : undefined;
+    this.sourceLineLabel = opts.lineNumberLabel;
+    this.syntaxMode = opts.syntaxMode;
   }
 
   protected handleModalInput(data: string): void {
@@ -1741,7 +1932,9 @@ abstract class MechPiModalTextEditor extends CustomEditor {
   render(width: number): string[] { return this.renderEditorFrame(width); }
 
   protected renderEditorFrame(width: number): string[] {
-    const lines = this.mode === "visual" || this.mode === "visualLine" ? this.renderVisualEditor(width) : super.render(width);
+    const lines = this.sourceLineStart !== undefined || this.syntaxMode
+      ? this.renderNumberedEditorFrame(width)
+      : this.mode === "visual" || this.mode === "visualLine" ? this.renderVisualEditor(width) : super.render(width);
     return this.withPromptModeLine(lines, width);
   }
 
@@ -1753,16 +1946,210 @@ abstract class MechPiModalTextEditor extends CustomEditor {
 
   protected promptModeLine(width: number): string {
     const modeName = this.modeName();
+    const source = this.sourceLineStart !== undefined ? ` ${this.currentSourceLocation()} ` : "";
     const label = ` ${modeName} `;
     const command = this.mode === "command" ? `${this.commandPrefix}${this.commandBuffer}` : "";
-    const commandText = command ? truncateToWidth(command, Math.max(0, width - visibleWidth(label) - 1), "") : "";
-    const filler = "─".repeat(Math.max(0, width - visibleWidth(commandText) - visibleWidth(label)));
-    const raw = `${commandText}${filler}${label}`;
+    const suffix = `${source}${label}`;
+    const commandText = command ? truncateToWidth(command, Math.max(0, width - visibleWidth(suffix) - 1), "") : "";
+    const filler = "─".repeat(Math.max(0, width - visibleWidth(commandText) - visibleWidth(suffix)));
+    const raw = `${commandText}${filler}${suffix}`;
     const color = (this as any).borderColor ?? ((x: string) => x);
     return color(truncateToWidth(raw, width, ""));
   }
 
   protected modeName(): string { return this.mode === "visualLine" ? "VISUAL LINE" : this.mode.toUpperCase(); }
+
+  protected currentSourceLocation(): string {
+    const line = (this.sourceLineStart ?? 1) + (this.editorState().cursorLine ?? 0);
+    return this.sourceLineLabel ? `${this.sourceLineLabel}:${line}` : `line ${line}`;
+  }
+
+  protected renderNumberedEditorFrame(width: number): string[] {
+    const s = this.editorState();
+    const lines: string[] = Array.isArray(s.lines) && s.lines.length ? s.lines : [""];
+    const numbered = this.sourceLineStart !== undefined;
+    const firstLine = this.sourceLineStart ?? 1;
+    const lastLine = firstLine + lines.length - 1;
+    const gutterDigits = numbered ? Math.max(3, String(lastLine).length) : 0;
+    const gutterWidth = numbered ? gutterDigits + 2 : 0;
+    const contentWidth = Math.max(1, width - gutterWidth);
+    (this as any).lastWidth = contentWidth;
+
+    const maxVisible = Math.max(5, Math.floor(this.tui.terminal.rows * 0.3));
+    let scrollOffset = Number((this as any).scrollOffset ?? 0);
+    const cursorLine = Math.max(0, Math.min(Number(s.cursorLine ?? 0), lines.length - 1));
+    if (cursorLine < scrollOffset) scrollOffset = cursorLine;
+    else if (cursorLine >= scrollOffset + maxVisible) scrollOffset = cursorLine - maxVisible + 1;
+    scrollOffset = Math.max(0, Math.min(scrollOffset, Math.max(0, lines.length - maxVisible)));
+    (this as any).scrollOffset = scrollOffset;
+
+    const border = this.editorBorder(width, scrollOffset > 0 ? `─── ↑ ${scrollOffset} more ` : undefined);
+    const out: string[] = [border];
+    const endLine = Math.min(lines.length, scrollOffset + maxVisible);
+    for (let i = scrollOffset; i < endLine; i++) {
+      const gutter = numbered ? this.renderLineGutter(firstLine + i, gutterDigits, i === cursorLine) : "";
+      const rendered = this.renderSourceLine(String(lines[i] ?? ""), i, contentWidth);
+      const pad = " ".repeat(Math.max(0, contentWidth - visibleWidth(rendered)));
+      out.push(`${gutter}${rendered}${pad}`);
+    }
+    const linesBelow = lines.length - endLine;
+    out.push(this.editorBorder(width, linesBelow > 0 ? `─── ↓ ${linesBelow} more ` : undefined));
+    const acState = (this as any).autocompleteState;
+    const acList = (this as any).autocompleteList;
+    if (acState && acList) {
+      const prefix = numbered ? " ".repeat(gutterWidth) : "";
+      for (const line of acList.render(contentWidth)) {
+        const padded = `${prefix}${line}${" ".repeat(Math.max(0, contentWidth - visibleWidth(line)))}`;
+        out.push(truncateToWidth(padded, width, ""));
+      }
+    }
+    return out;
+  }
+
+  protected editorBorder(width: number, indicator?: string): string {
+    const color = (this as any).borderColor ?? ((x: string) => x);
+    if (!indicator) return color("─".repeat(width));
+    const raw = indicator + "─".repeat(Math.max(0, width - visibleWidth(indicator)));
+    return color(truncateToWidth(raw, width, ""));
+  }
+
+  protected renderLineGutter(lineNo: number, digits: number, active: boolean): string {
+    const raw = `${String(lineNo).padStart(digits, " ")} │`;
+    if (active && this.uiTheme?.fg) return this.uiTheme.fg("accent", raw);
+    if (this.uiTheme?.fg) return this.uiTheme.fg("dim", raw);
+    return raw;
+  }
+
+  protected renderSourceLine(line: string, lineNo: number, width: number): string {
+    const s = this.editorState();
+    const cursorLine = Number(s.cursorLine ?? 0);
+    const cursorCol = Math.max(0, Number(s.cursorCol ?? 0));
+    const current = cursorLine === lineNo;
+    let hscroll = 0;
+    if (current && cursorCol >= width) hscroll = Math.max(0, cursorCol - width + 1);
+    const startCol = hscroll;
+    const endCol = Math.min(line.length, startCol + width);
+    const selection = this.selectionRange();
+    const lineStart = this.lineStartIndex(lineNo);
+    let out = "";
+    if (line.length === 0) {
+      const selected = !!selection && selection.start <= lineStart && selection.end > lineStart;
+      const blank = selected || current ? `\x1b[7m \x1b[27m` : "";
+      return blank;
+    }
+    for (let col = startCol; col < endCol; col++) {
+      const idx = lineStart + col;
+      const selected = !!selection && idx >= selection.start && idx < selection.end;
+      const underCursor = current && col === cursorCol && !(this as any).autocompleteState;
+      out += this.renderSourceChar(line, col, selected || underCursor);
+    }
+    if (current && cursorCol >= startCol && cursorCol === line.length && visibleWidth(out) < width && !(this as any).autocompleteState) out += "\x1b[7m \x1b[27m";
+    return truncateToWidth(out, width, "");
+  }
+
+  protected renderSourceChar(line: string, col: number, inverse: boolean): string {
+    const raw = line[col] ?? "";
+    let styled = this.applySyntaxHighlight(line, col, raw);
+    if (inverse) styled = `\x1b[7m${styled}\x1b[27m`;
+    return styled;
+  }
+
+  protected applySyntaxHighlight(line: string, col: number, ch: string): string {
+    if (!this.syntaxMode || !this.uiTheme?.fg) return ch;
+    const percent = firstUnescapedPercent(line);
+    if (percent >= 0 && col >= percent) return this.syntaxFg("syntaxComment", ch, "dim");
+    return this.syntaxMode === "bibtex" ? this.applyBibtexSyntaxHighlight(line, col, ch) : this.applyLatexSyntaxHighlight(line, col, ch);
+  }
+
+  protected syntaxFg(key: string, ch: string, fallback: string = key): string {
+    if (this.uiTheme?.fg) return this.uiTheme.fg(key, ch);
+    return themeFg(this.uiTheme, fallback, ch);
+  }
+
+  protected applyBibtexSyntaxHighlight(line: string, col: number, ch: string): string {
+    if (/[@{}=,#]/.test(ch)) return this.syntaxFg("syntaxPunctuation", ch, "dim");
+    const before = line.slice(0, col + 1);
+    const after = line.slice(col + 1);
+    if (/^\s*@[A-Za-z]*$/.test(before)) return this.syntaxFg("syntaxKeyword", ch, "accent");
+    const entryStart = line.match(/^\s*@[A-Za-z]+\s*\{\s*/);
+    if (entryStart && col >= entryStart[0].length && line.slice(entryStart[0].length, col + 1).indexOf(",") < 0) return this.syntaxFg("syntaxVariable", ch, "accent");
+    if (/^\s*[A-Za-z][A-Za-z0-9_-]*\s*$/.test(before) && /^\s*=/.test(after)) return this.syntaxFg("syntaxVariable", ch, "accent");
+    const eq = line.indexOf("=");
+    if (eq >= 0 && col > eq) {
+      if (/\d/.test(ch) && /^\s*\d/.test(line.slice(eq + 1))) return this.syntaxFg("syntaxNumber", ch, "warning");
+      if (ch !== " " && ch !== "\t" && ch !== ",") return this.syntaxFg("syntaxString", ch, "warning");
+    }
+    return ch;
+  }
+
+  protected applyLatexSyntaxHighlight(line: string, col: number, ch: string): string {
+    if (this.inLatexVerbSpan(line, col)) return this.syntaxFg("syntaxString", ch, "warning");
+    const commandArg = this.latexCommandArgumentAtCol(line, col);
+    if (/[{}\[\](),]/.test(ch)) return this.syntaxFg("syntaxPunctuation", ch, "dim");
+    const commandSpan = this.latexCommandSpanAtCol(line, col);
+    if (commandSpan) {
+      const key = /^(?:documentclass|usepackage|begin|end|section|subsection|subsubsection|paragraph|chapter|part|item|caption|label|ref|eqref|autoref|cref|Cref|cite|citet|citep|parencite|textcite)$/.test(commandSpan.name)
+        ? "syntaxKeyword"
+        : "syntaxFunction";
+      return this.syntaxFg(key, ch, "accent");
+    }
+    if (commandArg) {
+      if (commandArg === "begin" || commandArg === "end") return this.syntaxFg("syntaxType", ch, "accent");
+      if (LATEX_REF_COMMANDS.has(commandArg) || commandArg === "label") return this.syntaxFg("syntaxVariable", ch, "accent");
+      if (LATEX_CITE_COMMANDS.has(commandArg)) return this.syntaxFg("syntaxString", ch, "warning");
+      if (/^(?:documentclass|usepackage|input|include|includegraphics|bibliography|addbibresource|import|subimport|url|href)$/.test(commandArg)) return this.syntaxFg("syntaxString", ch, "warning");
+    }
+    if (/[$_^&#~]/.test(ch)) return this.syntaxFg("syntaxOperator", ch, "warning");
+    if (/[=+\-*/<>|:;]/.test(ch)) return this.syntaxFg("syntaxOperator", ch, "warning");
+    if (/\d/.test(ch) && this.inNumberToken(line, col)) return this.syntaxFg("syntaxNumber", ch, "warning");
+    return ch;
+  }
+
+  protected latexCommandSpanAtCol(line: string, col: number): { start: number; end: number; name: string } | null {
+    const re = /\\(?:[A-Za-z@]+\*?|.)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(line))) {
+      const start = m.index;
+      const end = start + m[0].length;
+      if (col >= start && col < end) return { start, end, name: m[0].replace(/^\\/, "").replace(/\*$/, "") };
+    }
+    return null;
+  }
+
+  protected latexCommandArgumentAtCol(line: string, col: number): string | null {
+    const re = /\\([A-Za-z@]+)\*?(?:\s*\[[^\]\n]*\])*\s*/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(line))) {
+      const open = re.lastIndex;
+      if (line[open] !== "{") continue;
+      const braced = readBraced(line, open);
+      if (!braced) continue;
+      if (col > open && col < braced.end - 1) return m[1] ?? null;
+      re.lastIndex = braced.end;
+    }
+    return null;
+  }
+
+  protected inLatexVerbSpan(line: string, col: number): boolean {
+    const re = /\\verb\*?/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(line))) {
+      const delimIndex = m.index + m[0].length;
+      const delim = line[delimIndex];
+      if (!delim || /\s/.test(delim)) continue;
+      const end = line.indexOf(delim, delimIndex + 1);
+      const spanEnd = end >= 0 ? end + 1 : line.length;
+      if (col >= m.index && col < spanEnd) return true;
+      re.lastIndex = spanEnd;
+    }
+    return false;
+  }
+
+  protected inNumberToken(line: string, col: number): boolean {
+    const left = line.slice(0, col + 1).match(/[0-9.]+$/)?.[0] ?? "";
+    const right = line.slice(col + 1).match(/^[0-9.]*/)?.[0] ?? "";
+    return /^\d+(?:\.\d+)?$/.test(left + right);
+  }
 
   protected tryHandleCtrlAPrefixInput(data: string): boolean {
     const prefixed = splitCtrlAPrefix(data);
@@ -1824,9 +2211,7 @@ abstract class MechPiModalTextEditor extends CustomEditor {
   }
 
   protected handleInsertMode(data: string): void {
-    if (this.isAutocompleteOpen()) {
-      if (matchesKey(data, Key.up) || matchesKey(data, Key.down) || matchesKey(data, Key.tab) || matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.enter)) { super.handleInput(data); return; }
-    }
+    if (this.handleFishAutocompleteKey(data)) return;
     if (matchesKey(data, Key.escape)) { this.enterNormal(); return; }
     if (isPromptBackspaceInput(data)) { this.handleBackspaceInput(); return; }
     if (matchesKey(data, Key.enter) || matchesKey(data, "shift+enter") || matchesKey(data, "shift+return")) { this.insertTextAtCursor("\n"); return; }
@@ -1893,11 +2278,19 @@ abstract class MechPiModalTextEditor extends CustomEditor {
 
   protected async executeColonCommand(command: string): Promise<void> {
     if (!command) return;
+    if (/^\d+$/.test(command)) { this.goToCommandLine(Number.parseInt(command, 10)); return; }
     if (command === "q" || command === "q!") { this.status = "Use Ctrl+C to cancel this editor"; return; }
     if (command === "w") { this.status = "No file writer for this editor"; return; }
     if (command === "wq" || command === "x") { this.status = "Use Ctrl+S to save this editor"; return; }
     if (this.trySubstituteCommand(command)) return;
     this.status = `Not an editor command: ${command}`;
+  }
+
+  protected goToCommandLine(lineNumber: number): void {
+    const base = this.sourceLineStart ?? 1;
+    const target = Math.max(0, Math.floor(lineNumber) - base);
+    this.moveToLine(target);
+    this.status = `Moved to ${this.currentSourceLocation()}`;
   }
 
   protected keyText(data: string): string | undefined {
@@ -1951,6 +2344,7 @@ abstract class MechPiModalTextEditor extends CustomEditor {
     if (ch && /^[1-9]$/.test(ch)) { this.pendingCount += ch; this.status = `NORMAL -- ${this.pendingCount}`; return; }
     if (ch === "0" && this.pendingCount) { this.pendingCount += ch; this.status = `NORMAL -- ${this.pendingCount}`; return; }
     const count = this.consumeCount();
+    if (this.handleFishAutocompleteKey(data)) return;
     if (this.handleNormalCommand(data, ch)) return;
     if (this.pendingG) {
       const gCount = this.pendingGCount;
@@ -2257,6 +2651,132 @@ abstract class MechPiModalTextEditor extends CustomEditor {
   protected enterInsert(): void { this.mode = "insert"; this.visualAnchor = null; this.pendingOperator = null; this.pendingOperatorCount = 1; this.status = "INSERT"; }
   protected enterNormal(status = "NORMAL"): void { this.mode = "normal"; this.visualAnchor = null; this.pendingOperator = null; this.pendingOperatorCount = 1; this.status = status; }
   protected isAutocompleteOpen(): boolean { return !!(this as any).isShowingAutocomplete?.(); }
+  protected getAutocompleteProvider(): AutocompleteProvider | undefined { return (this as any).autocompleteProvider; }
+  protected isEnterInput(data: string): boolean { return matchesKey(data, Key.enter) || matchesKey(data, Key.return) || data === "\r" || data === "\n"; }
+  protected handleFishAutocompleteKey(data: string): boolean {
+    if (this.isAutocompleteOpen()) {
+      if (matchesKey(data, Key.tab) && Date.now() < this.ignoreDuplicateTabUntil) { return true; }
+      if (matchesKey(data, Key.tab) && !this.fishAutocompleteExplicit) { (this as any).cancelAutocomplete?.(); void this.openFishAutocomplete(); return true; }
+      if (matchesKey(data, Key.tab) || matchesKey(data, Key.down)) { (this as any).autocompleteList?.handleInput("\x1b[B"); this.tui.requestRender(); return true; }
+      if (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.up)) { (this as any).autocompleteList?.handleInput("\x1b[A"); this.tui.requestRender(); return true; }
+      if (this.isEnterInput(data)) {
+        // Never let Enter fall through to prompt submission while a completion
+        // menu is open. It accepts the highlighted completion, closes the menu,
+        // and leaves the editor in INSERT so the next Enter is the submit/accept.
+        this.acceptAutocompleteSelection();
+        this.enterInsert();
+        this.tui.requestRender();
+        return true;
+      }
+      if (this.isAutocompletePrintableInput(data)) {
+        // Fish behavior: normal characters typed while the pager is active go
+        // into the command line and end paging; they do not accept the selected
+        // pager row.
+        (this as any).cancelAutocomplete?.();
+        this.fishAutocompleteExplicit = false;
+        this.enterInsert();
+        this.tui.requestRender();
+        return false;
+      }
+    }
+    if (matchesKey(data, Key.tab)) { void this.openFishAutocomplete(); return true; }
+    if (this.isAutocompletePrintableInput(data) || isPromptBackspaceInput(data)) this.fishAutocompleteExplicit = false;
+    return false;
+  }
+  protected isAutocompletePrintableInput(data: string): boolean {
+    return matchesKey(data, Key.space) || (data.length === 1 && data.charCodeAt(0) >= 32) || (printableKey(data)?.length === 1);
+  }
+  protected fishAutocompleteForce(): boolean {
+    const s = this.editorState();
+    const before = String(s.lines[s.cursorLine] ?? "").slice(0, s.cursorCol);
+    const trimmed = before.trimStart();
+    // Prompt slash commands need the provider's command-completion path, which
+    // is disabled when force=true.  Everything else (paths, LaTeX, citations)
+    // uses forced completion so Tab behaves like fish completion for the active
+    // provider.
+    return !(trimmed.startsWith("/") && !trimmed.includes(" "));
+  }
+  protected acceptAutocompleteSelection(): boolean {
+    const provider = this.getAutocompleteProvider();
+    const list = (this as any).autocompleteList;
+    const item = list?.getSelectedItem?.();
+    const prefix = String((this as any).autocompletePrefix ?? "");
+    if (!provider || !item) return false;
+    const s = this.editorState();
+    this.snapshot();
+    const result = provider.applyCompletion(s.lines, s.cursorLine, s.cursorCol, item, prefix);
+    s.lines = result.lines;
+    s.cursorLine = result.cursorLine;
+    s.cursorCol = result.cursorCol;
+    (this as any).cancelAutocomplete?.();
+    this.fishAutocompleteExplicit = false;
+    this.enterInsert();
+    this.changed();
+    this.tui.requestRender();
+    return true;
+  }
+  protected async openFishAutocomplete(): Promise<void> {
+    const provider = this.getAutocompleteProvider();
+    if (!provider) return;
+    // Invalidate any built-in autocomplete request that may have been started by
+    // recent typing. Otherwise that older async request can race with explicit
+    // fish-style Tab completion and reselect a later prefix match (e.g. Analysis
+    // instead of first-listed Admin for ~/Documents/A).
+    (this as any).cancelAutocomplete?.();
+    this.fishAutocompleteExplicit = true;
+    const s = this.editorState();
+    if (provider.shouldTriggerFileCompletion && !provider.shouldTriggerFileCompletion(s.lines, s.cursorLine, s.cursorCol)) return;
+    const snapshotText = this.getText();
+    const snapshotLine = s.cursorLine;
+    const snapshotCol = s.cursorCol;
+    const controller = new AbortController();
+    const force = this.fishAutocompleteForce();
+    let suggestions = await provider.getSuggestions(s.lines, s.cursorLine, s.cursorCol, { signal: controller.signal, force }).catch(() => null);
+    if (this.getText() !== snapshotText || s.cursorLine !== snapshotLine || s.cursorCol !== snapshotCol) return;
+    if (!suggestions?.items?.length) { (this as any).cancelAutocomplete?.(); this.fishAutocompleteExplicit = false; this.tui.requestRender(); return; }
+    let prefix = suggestions.prefix ?? "";
+    if (force) {
+      const values = suggestions.items.map(item => item.value).filter(value => value.startsWith(prefix));
+      const common = commonStringPrefix(values);
+      if (common.length > prefix.length) {
+        this.snapshot();
+        const result = provider.applyCompletion(s.lines, s.cursorLine, s.cursorCol, { value: common, label: common }, prefix);
+        s.lines = result.lines;
+        s.cursorLine = result.cursorLine;
+        s.cursorCol = result.cursorCol;
+        this.changed();
+        suggestions = await provider.getSuggestions(s.lines, s.cursorLine, s.cursorCol, { signal: controller.signal, force }).catch(() => null) ?? { items: [{ value: common, label: common }], prefix: common };
+        prefix = suggestions.prefix ?? common;
+      }
+      if (suggestions.items.length === 1) {
+        const only = suggestions.items[0];
+        this.snapshot();
+        const result = provider.applyCompletion(s.lines, s.cursorLine, s.cursorCol, only, prefix);
+        s.lines = result.lines;
+        s.cursorLine = result.cursorLine;
+        s.cursorCol = result.cursorCol;
+        (this as any).cancelAutocomplete?.();
+        this.fishAutocompleteExplicit = false;
+        this.changed();
+        this.tui.requestRender();
+        return;
+      }
+    }
+    if (!suggestions?.items?.length) return;
+    const originalGetBest = (this as any).getBestAutocompleteMatchIndex;
+    try {
+      // Fish-style Tab opens the pager on the first item. Pi's built-in editor
+      // otherwise tries to preselect the first value that starts with the prefix,
+      // which is not the same thing after we have intentionally ordered matches.
+      (this as any).getBestAutocompleteMatchIndex = () => -1;
+      (this as any).applyAutocompleteSuggestions?.(suggestions, "force");
+    } finally {
+      (this as any).getBestAutocompleteMatchIndex = originalGetBest;
+    }
+    (this as any).autocompleteList?.setSelectedIndex?.(0);
+    this.ignoreDuplicateTabUntil = Date.now() + 250;
+    this.tui.requestRender();
+  }
   protected editorState(): any { return (this as any).state; }
   protected snapshot(): void { (this as any).pushUndoSnapshot?.(); }
   protected changed(): void { this.onChange?.(this.getText()); this.invalidate(); }
@@ -2374,6 +2894,12 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
     (this as any).history = this.promptHistory.slice();
   }
 
+  render(width: number): string[] {
+    const lines = super.render(width);
+    if (!this.isMechFuzzyCompletionPrompt() || !this.isAutocompleteOpen()) return lines;
+    return lines.map(line => /^\s*→\s/.test(stripTerminalEscapes(line)) ? highlightSelectedAutocompleteLine(this.uiTheme, line, width) : line);
+  }
+
   handleInput(data: string): void {
     if (isKeyRelease(data)) {
       if (this.mode === "insert" && this.handleVoiceSpace(data)) this.tui.requestRender();
@@ -2389,11 +2915,7 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
       this.status = "INSERT";
     }
     if (this.handleVoiceSpace(data)) return;
-    if (this.isAutocompleteOpen()) {
-      if (matchesKey(data, Key.up) || matchesKey(data, Key.down)) { super.handleInsertMode(data); return; }
-      if (this.isMechGotoCitePrompt() && matchesKey(data, Key.tab)) { CustomEditor.prototype.handleInput.call(this, "\x1b[B"); return; }
-      if (this.isMechGotoCitePrompt() && matchesKey(data, Key.shift("tab"))) { CustomEditor.prototype.handleInput.call(this, "\x1b[A"); return; }
-    }
+    if (this.handleFishAutocompleteKey(data)) return;
     if (matchesKey(data, Key.up)) { if (this.browsePromptHistory("older")) return; }
     if (matchesKey(data, Key.down)) { if (this.browsePromptHistory("newer")) return; }
     if (matchesKey(data, Key.ctrl("s"))) { this.submitPrompt(); return; }
@@ -2425,7 +2947,7 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
     return this.tryHandleCtrlAPrefixInput(data);
   }
 
-  private isMechGotoCitePrompt(): boolean { return this.getText().trimStart().startsWith("/mechgotocite"); }
+  private isMechFuzzyCompletionPrompt(): boolean { return isMechFuzzyCompletionPromptText(this.getText()); }
   private submitPrompt(): void {
     const promptText = (this.getExpandedText?.() ?? this.getText()).trim();
     if (promptText.length === 0) return;
@@ -2546,6 +3068,8 @@ type PopupEditorSaveReason = "save" | "cancel";
 
 type PopupEditorResult = { reason: PopupEditorSaveReason; text: string };
 
+type ModalSyntaxMode = "latex" | "bibtex";
+
 type UniformPopupEditorOptions = {
   title: string;
   initialText: string;
@@ -2554,6 +3078,11 @@ type UniformPopupEditorOptions = {
   renderPreview?: (width: number) => string[];
   onRefresh?: (text: string, setStatus: (status: string) => void) => Promise<void> | void;
   onWrite?: (text: string, setStatus: (status: string) => void) => Promise<void> | void;
+  syntaxMode?: ModalSyntaxMode;
+  lineNumberStart?: number;
+  lineNumberLabel?: string;
+  initialCursorLine?: number;
+  initialCursorCol?: number;
 };
 
 class MechPiUniformPopupEditor extends MechPiModalTextEditor {
@@ -2568,7 +3097,15 @@ class MechPiUniformPopupEditor extends MechPiModalTextEditor {
     private readonly done: (value: PopupEditorResult | null) => void,
   ) {
     super(tui, themeRef, keybindings);
+    this.configureModalEditorFeatures({ lineNumberStart: opts.lineNumberStart, lineNumberLabel: opts.lineNumberLabel, syntaxMode: opts.syntaxMode });
     this.setText(opts.initialText);
+    if (opts.initialCursorLine !== undefined) {
+      this.moveToLine(opts.initialCursorLine);
+      this.editorState().cursorCol = Math.max(0, Math.floor(opts.initialCursorCol ?? 0));
+      this.clampCursor();
+    }
+    if (opts.initialText.length > 0) this.enterNormal("NORMAL");
+    else this.enterInsert();
     (this as any).disableSubmit = true;
     if (opts.autocompleteProvider) (this as any).setAutocompleteProvider?.(opts.autocompleteProvider);
   }
@@ -2654,7 +3191,8 @@ async function openUniformPopupEditor(ctx: ExtensionContext, opts: UniformPopupE
   return result?.reason === "save" ? result.text : null;
 }
 
-type EditTarget = { file: string; line: number; score: number; title: string; preview: string };
+type EditTargetKind = "direct" | "file" | "equation" | "label" | "section" | "text";
+type EditTarget = { file: string; line: number; score: number; title: string; preview: string; kind?: EditTargetKind; wholeFile?: boolean };
 
 function editSearchTerms(query: string): string[] {
   return unique(
@@ -2694,38 +3232,56 @@ function editSearchScore(query: string, terms: string[], haystack: string, title
   return score;
 }
 
-async function findMechEditTarget(ctx: ExtensionContext, query: string): Promise<EditTarget | null> {
+async function findMechEditTargets(ctx: ExtensionContext, query: string): Promise<EditTarget[]> {
   const trimmed = query.trim();
   const direct = trimmed.match(/^(.+?\.tex)(?::(\d+))?$/);
   if (direct) {
     const file = direct[1];
+    const hasLine = direct[2] !== undefined;
     const line = Math.max(1, Number.parseInt(direct[2] ?? "1", 10) || 1);
-    if (await exists(path.resolve(ctx.cwd, file))) return { file, line, score: 9999, title: "direct location", preview: `${file}:${line}` };
+    if (await exists(path.resolve(ctx.cwd, file))) return [{ file, line, score: 9999, title: hasLine ? "direct location" : "direct file", preview: hasLine ? `${file}:${line}` : file, kind: "direct", wholeFile: !hasLine }];
   }
 
-  const map = await loadOrBuildMap(ctx);
+  const map = await buildPaperMap(ctx.cwd);
+  await writeMap(ctx.cwd, map).catch(() => {});
   const terms = editSearchTerms(trimmed);
-  const candidates: EditTarget[] = [];
-  const add = (target: EditTarget) => { if (target.score > 0) candidates.push(target); };
+  const byKey = new Map<string, EditTarget>();
+  const add = (target: EditTarget) => {
+    if (target.score <= 0) return;
+    const key = `${target.kind ?? "text"}:${target.file}:${target.wholeFile ? "file" : target.line}:${target.title}`;
+    const prev = byKey.get(key);
+    if (!prev || target.score > prev.score) byKey.set(key, target);
+  };
+
+  for (const rel of map.texFiles) {
+    const base = path.basename(rel);
+    const title = `file ${rel}`;
+    const rawScore = editSearchScore(trimmed, terms, `${rel}\n${base}`, title);
+    let score = rawScore > 0 ? rawScore + 30 : 0;
+    if (editSearchNormalize(rel) === editSearchNormalize(trimmed) || editSearchNormalize(base) === editSearchNormalize(trimmed)) score += 500;
+    add({ file: rel, line: 1, score, title, preview: `Open entire file: ${rel}`, kind: "file", wholeFile: true });
+  }
 
   for (const e of map.equations) {
     const labels = e.labels ?? (e.label ? [e.label] : []);
     const numbers = (e.numbers ?? []).map(n => n.number);
     const title = `equation ${labels.join(", ")} ${numbers.length ? `(${numbers.join(", ")})` : ""}`;
-    const text = `${title}\n${e.tex}\n${e.nearby}`;
-    let score = editSearchScore(trimmed, terms, text, title) + 10;
+    const text = `${title}\n${e.file}\n${e.tex}\n${e.nearby}`;
+    const rawScore = editSearchScore(trimmed, terms, text, title);
+    let score = rawScore > 0 ? rawScore + 10 : 0;
     if (labels.some(label => trimmed === label)) score += 500;
     if (labels.some(label => trimmed.includes(label))) score += 250;
     if (numbers.some(n => sameEquationNumber(n, trimmed.replace(/^number:/, "")))) score += 500;
-    add({ file: e.file, line: e.lineStart, score, title, preview: equationOnlyPreview(e.tex).slice(0, 240) });
+    add({ file: e.file, line: e.lineStart, score, title, preview: equationOnlyPreview(e.tex).slice(0, 240), kind: "equation" });
   }
 
   for (const label of map.labels) {
     const title = `label ${label.label}`;
-    let score = editSearchScore(trimmed, terms, title, title);
+    const rawScore = editSearchScore(trimmed, terms, `${label.file}\n${title}`, title);
+    let score = rawScore;
     if (trimmed === label.label) score += 400;
     if (trimmed.includes(label.label)) score += 150;
-    add({ file: label.file, line: label.line, score, title, preview: title });
+    add({ file: label.file, line: label.line, score, title, preview: title, kind: "label" });
   }
 
   for (const rel of map.texFiles) {
@@ -2737,17 +3293,91 @@ async function findMechEditTarget(ctx: ExtensionContext, query: string): Promise
       if (section) {
         const title = `${section[1]} ${section[2]}`;
         const context = lines.slice(i, Math.min(lines.length, i + 8)).join("\n");
-        add({ file: rel, line: i + 1, score: editSearchScore(trimmed, terms, `${title}\n${context}`, title) + 20, title, preview: context.slice(0, 260) });
+        const rawScore = editSearchScore(trimmed, terms, `${rel}\n${title}\n${context}`, title);
+        add({ file: rel, line: i + 1, score: rawScore > 0 ? rawScore + 20 : 0, title, preview: context.slice(0, 260), kind: "section" });
       }
       if (/\S/.test(line)) {
         const context = lines.slice(Math.max(0, i - 2), Math.min(lines.length, i + 5)).join("\n");
-        add({ file: rel, line: i + 1, score: editSearchScore(trimmed, terms, context, line), title: `text near ${rel}:${i + 1}`, preview: context.slice(0, 260) });
+        add({ file: rel, line: i + 1, score: editSearchScore(trimmed, terms, `${rel}\n${context}`, line), title: `text near ${rel}:${i + 1}`, preview: context.slice(0, 260), kind: "text" });
       }
     }
   }
 
-  candidates.sort((a, b) => b.score - a.score);
-  return candidates[0] ?? null;
+  return Array.from(byKey.values()).sort((a, b) => b.score - a.score || a.file.localeCompare(b.file)).slice(0, 80);
+}
+
+async function findMechEditTarget(ctx: ExtensionContext, query: string): Promise<EditTarget | null> {
+  return (await findMechEditTargets(ctx, query))[0] ?? null;
+}
+
+class MechEditTargetPicker implements Focusable {
+  private selected = 0;
+  private _focused = false;
+  constructor(private tui: TUI, private theme: any, private targets: EditTarget[], private query: string, private done: (target: EditTarget | null) => void) {}
+  get focused(): boolean { return this._focused; }
+  set focused(v: boolean) { this._focused = v; }
+  invalidate(): void {}
+  private move(delta: number): void {
+    this.selected = Math.max(0, Math.min(this.targets.length - 1, this.selected + delta));
+    this.tui.requestRender();
+  }
+  render(width: number): string[] {
+    const lines: string[] = [];
+    lines.push(this.theme.fg("accent", "─".repeat(width)));
+    lines.push(truncateToWidth(this.theme.fg("accent", this.theme.bold("Mech edit matches")) + this.theme.fg("dim", "  tab/j/down move • shift-tab/k/up move • enter open • q cancel"), width));
+    lines.push(truncateToWidth(`query: ${this.query}`, width));
+    lines.push(this.theme.fg("accent", "─".repeat(width)));
+    const visibleRows = Math.max(5, Math.min(this.targets.length, this.tui.terminal.rows - 12));
+    const start = Math.max(0, Math.min(this.selected - Math.floor(visibleRows / 2), this.targets.length - visibleRows));
+    const shown = this.targets.slice(start, start + visibleRows);
+    for (let j = 0; j < shown.length; j++) {
+      const i = start + j;
+      const t = shown[j];
+      const loc = t.wholeFile ? t.file : `${t.file}:${t.line}`;
+      const kind = t.kind ?? "text";
+      const line = `${i === this.selected ? "▶" : " "} [${kind}] ${loc} — ${t.title} (${t.score.toFixed(1)})`;
+      lines.push(truncateToWidth(i === this.selected ? this.theme.bg("selectedBg", this.theme.fg("accent", line)) : line, width));
+    }
+    if (this.targets.length > visibleRows) lines.push(truncateToWidth(this.theme.fg("dim", `${start + 1}-${start + shown.length} of ${this.targets.length}`), width));
+    const t = this.targets[this.selected];
+    if (t) {
+      lines.push(this.theme.fg("accent", "─".repeat(width)));
+      lines.push(truncateToWidth(this.theme.fg("muted", t.wholeFile ? `Opens entire file: ${t.file}` : `Opens ${t.file}:${t.line}`), width));
+      for (const p of wrapPlain(t.preview || t.title, width).slice(0, 6)) lines.push(truncateToWidth(p, width));
+    }
+    lines.push(this.theme.fg("accent", "─".repeat(width)));
+    return lines;
+  }
+  handleInput(data: string): void {
+    const ch = printableKey(data);
+    if (matchesKey(data, Key.escape) || ch === "q") { this.done(null); return; }
+    if (matchesKey(data, Key.enter)) { this.done(this.targets[this.selected] ?? null); return; }
+    if (ch === "j" || matchesKey(data, Key.down) || matchesKey(data, Key.tab)) { this.move(1); return; }
+    if (ch === "k" || matchesKey(data, Key.up) || matchesKey(data, Key.shift("tab"))) { this.move(-1); return; }
+  }
+}
+
+async function chooseMechEditTarget(ctx: ExtensionContext, query: string): Promise<EditTarget | null> {
+  const targets = await findMechEditTargets(ctx, query);
+  if (targets.length <= 1 || !ctx.hasUI) return targets[0] ?? null;
+  return await ctx.ui.custom<EditTarget | null>((tui, theme, _kb, done) => opaquePopup(new MechEditTargetPicker(tui, theme, targets, query, done), theme), { overlay: true, overlayOptions: { width: "90%", maxHeight: "85%", anchor: "center" } });
+}
+
+function quoteCommandWordIfNeeded(s: string): string {
+  return /\s/.test(s) ? `'${s.replace(/'/g, `'\\''`)}'` : s;
+}
+
+function mechEditTargetCommandValue(target: EditTarget): string {
+  const loc = target.wholeFile ? target.file : `${target.file}:${target.line}`;
+  return `/mechedit ${quoteCommandWordIfNeeded(loc)}`;
+}
+
+function mechEditAutocompleteItems(targets: EditTarget[]): AutocompleteItem[] {
+  return targets.slice(0, 12).map(target => ({
+    value: mechEditTargetCommandValue(target),
+    label: target.wholeFile ? target.file : `${target.file}:${target.line}`,
+    description: `[${target.kind ?? "text"}] ${target.title} (${target.score.toFixed(1)})`,
+  }));
 }
 
 function splitCommandWords(command: string): string[] {
@@ -2758,6 +3388,64 @@ function commandExists(command: string): boolean {
   return spawnSync(command, ["--version"], { stdio: "ignore" }).status === 0 || spawnSync("which", [command], { stdio: "ignore" }).status === 0;
 }
 
+function parseMechEditArgs(raw: string): { query: string; inline: boolean } {
+  const words = splitCommandWords(raw);
+  const editMode = (process.env.MECHPI_EDIT_MODE ?? "").toLowerCase();
+  let inline = editMode === "external" ? false : true;
+  const kept: string[] = [];
+  for (const word of words) {
+    if (word === "--inline" || word === "--popup") { inline = true; continue; }
+    if (word === "--external") { inline = false; continue; }
+    kept.push(word);
+  }
+  const query = kept.length ? kept.join(" ") : raw.replace(/(^|\s)--(inline|popup|external)(?=\s|$)/g, " ").trim();
+  return { query, inline };
+}
+
+function textHash(text: string): string { return createHash("sha1").update(text).digest("hex"); }
+
+async function openSourceFilePopupEditor(ctx: ExtensionContext, target: EditTarget): Promise<string | null> {
+  if (!ctx.hasUI) return null;
+  const abs = path.resolve(ctx.cwd, target.file);
+  const original = await readText(abs);
+  let lastKnownHash = textHash(original);
+  let lastSavedText = normalizeEditorLineEndings(original);
+  const syntaxMode: ModalSyntaxMode | undefined = target.file.endsWith(".bib") ? "bibtex" : target.file.endsWith(".tex") ? "latex" : undefined;
+  const completions = syntaxMode === "latex" ? await latexCompletionItems(ctx) : [];
+  const saveText = async (text: string, setStatus?: (status: string) => void): Promise<string> => {
+    const current = await readText(abs);
+    if (textHash(current) !== lastKnownHash) throw new Error(`${target.file} changed on disk while the popup editor was open; refusing to overwrite.`);
+    const replacement = restoreLineEndingsForSource(text, current);
+    setStatus?.(`Writing ${target.file}...`);
+    if (!(await guardPathBeforeWrite(ctx, abs, `saving source edit in ${target.file}`))) throw new Error("Cancelled by git guard.");
+    await fs.writeFile(abs, replacement);
+    await autoCommitPaths(ctx, [abs], `Save source edit in ${target.file}`);
+    lastKnownHash = textHash(replacement);
+    lastSavedText = normalizeEditorLineEndings(replacement);
+    if (target.file.endsWith(".tex") || target.file.endsWith(".bib")) {
+      await writeMap(ctx.cwd, await buildPaperMap(ctx.cwd));
+    }
+    return `${target.file}:${Math.min(Math.max(1, target.line), normalizeEditorLineEndings(replacement).split("\n").length)}`;
+  };
+  const edited = await openUniformPopupEditor(ctx, {
+    title: `Edit ${target.wholeFile ? target.file : `${target.file}:${target.line}`} (${target.title}, score ${target.score.toFixed(1)})`,
+    initialText: lastSavedText,
+    autocompleteProvider: syntaxMode === "latex" ? latexAutocompleteProvider(completions) : undefined,
+    syntaxMode,
+    lineNumberStart: 1,
+    lineNumberLabel: target.file,
+    initialCursorLine: Math.max(0, target.line - 1),
+    help: "Inline manuscript editor. :w writes; :wq/Ctrl+S saves and closes; :<line> jumps to a source line; Ctrl+C/:q cancels.",
+    onWrite: async (text, setStatus) => {
+      const where = await saveText(text, setStatus);
+      setStatus(`Wrote ${where}; rebuilt .mechpi/paper-map.json.`);
+    },
+  });
+  if (edited === null) return null;
+  if (edited !== lastSavedText) await saveText(edited);
+  return target.wholeFile ? target.file : `${target.file}:${target.line}`;
+}
+
 function openExternalEditorAt(cwd: string, target: EditTarget): { command: string; args: string[]; detached: boolean } {
   const abs = path.resolve(cwd, target.file);
   const editorWords = splitCommandWords(process.env.MECHPI_EDITOR ?? process.env.VISUAL ?? process.env.EDITOR ?? "nvim");
@@ -2766,13 +3454,13 @@ function openExternalEditorAt(cwd: string, target: EditTarget): { command: strin
   const base = path.basename(editor);
 
   if (/^(code|codium|code-insiders)$/.test(base)) {
-    const args = [...editorArgs, "-g", `${abs}:${target.line}`];
+    const args = target.wholeFile ? [...editorArgs, abs] : [...editorArgs, "-g", `${abs}:${target.line}`];
     const child = spawn(editor, args, { cwd, detached: true, stdio: "ignore" });
     child.unref();
     return { command: editor, args, detached: true };
   }
 
-  const args = [...editorArgs, `+${target.line}`, abs];
+  const args = target.wholeFile ? [...editorArgs, abs] : [...editorArgs, `+${target.line}`, abs];
   const terminalWords = splitCommandWords(process.env.MECHPI_EDITOR_TERMINAL ?? "");
   const hasKitty = commandExists("kitty");
   if (terminalWords.length || hasKitty) {
@@ -2916,6 +3604,356 @@ async function detectBibFile(cwd: string, map: PaperMap): Promise<string> {
   if (resource) return resource.endsWith(".bib") ? resource : `${resource}.bib`;
   const bib = (await walk(cwd).catch(() => [])).find(p => p.endsWith(".bib"));
   return bib ? path.relative(cwd, bib) : "references.bib";
+}
+
+
+
+type GitPathStatus = { root?: string; rel?: string; tracked: boolean; porcelain: string; exists: boolean };
+
+function gitGuardEnabled(): boolean { return !/^(0|false|off|no)$/i.test(process.env.MECHPI_GIT_GUARD ?? "1"); }
+function compileRelevantExtension(abs: string): boolean {
+  return new Set([".tex", ".bib", ".sty", ".cls", ".bst", ".bbx", ".cbx", ".png", ".jpg", ".jpeg", ".pdf", ".eps", ".svg"]).has(path.extname(abs).toLowerCase());
+}
+function isGeneratedLatexArtifact(abs: string): boolean {
+  return /\.(aux|bbl|bcf|blg|log|out|toc|lof|lot|fls|fdb_latexmk|synctex\.gz|run\.xml)$/i.test(abs);
+}
+function isMechPiInternalPath(abs: string): boolean { return abs.split(path.sep).includes(".mechpi"); }
+
+async function gitPathStatus(ctx: ExtensionContext, absPath: string): Promise<GitPathStatus> {
+  const abs = path.resolve(absPath);
+  const dir = fss.existsSync(abs) && fss.statSync(abs).isDirectory() ? abs : path.dirname(abs);
+  const rootResult = await run("git", ["-C", dir, "rev-parse", "--show-toplevel"], ctx.cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
+  if (rootResult.code !== 0) return { tracked: false, porcelain: "", exists: fss.existsSync(abs) };
+  const root = rootResult.stdout.trim();
+  const rel = path.relative(root, abs) || path.basename(abs);
+  const trackedResult = await run("git", ["-C", root, "ls-files", "--error-unmatch", "--", rel], ctx.cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
+  const statusResult = await run("git", ["-C", root, "status", "--porcelain", "--", rel], ctx.cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
+  return { root, rel, tracked: trackedResult.code === 0, porcelain: statusResult.stdout.trim(), exists: fss.existsSync(abs) };
+}
+
+async function showGitPathDiff(ctx: ExtensionContext, st: GitPathStatus, absPath: string): Promise<void> {
+  if (!st.root || !st.rel) return;
+  const diff = st.tracked
+    ? await run("git", ["-C", st.root, "diff", "--", st.rel], ctx.cwd).catch(() => ({ code: 0, stdout: "", stderr: "" }))
+    : { code: 0, stdout: `Untracked file: ${absPath}\n${await readText(absPath).catch(() => "")}`, stderr: "" };
+  await openUniformPopupEditor(ctx, { title: `git review: ${st.rel}`, initialText: diff.stdout || st.porcelain || "(no diff)", help: "Read-only review; Ctrl-C/:q closes.", syntaxMode: absPath.endsWith(".bib") ? "bibtex" : absPath.endsWith(".tex") ? "latex" : undefined });
+}
+
+async function guardPathBeforeWrite(_ctx: ExtensionContext, absPath: string, _reason: string, _options: { allowUntracked?: boolean; offerGitAdd?: boolean } = {}): Promise<boolean> {
+  // Current policy: do not interrupt benign edit/save flows. Edits are committed
+  // automatically after successful writes. The only interactive warnings should
+  // come from explicit stale-under-editor checks or from git failures that need
+  // human conflict resolution.
+  if (!gitGuardEnabled() || isMechPiInternalPath(absPath) || isGeneratedLatexArtifact(absPath)) return true;
+  return true;
+}
+
+function graphicsPathCandidates(baseDir: string, raw: string): string[] {
+  const clean = raw.trim().replace(/^['"]|['"]$/g, "");
+  if (!clean) return [];
+  const base = path.isAbsolute(expandUserPath(clean)) ? expandUserPath(clean) : path.resolve(baseDir, clean);
+  if (path.extname(base)) return [base];
+  return [base, ...[".pdf", ".png", ".jpg", ".jpeg", ".eps", ".svg"].map(ext => `${base}${ext}`)];
+}
+
+async function compileRelevantFiles(ctx: ExtensionContext, map: PaperMap): Promise<{ existing: string[]; missing: string[] }> {
+  const files = new Set<string>();
+  const missing = new Set<string>();
+  for (const rel of map.texFiles) files.add(path.resolve(ctx.cwd, rel));
+  for (const rel of await detectLocalBibResources(ctx.cwd, map).catch(() => [])) files.add(path.isAbsolute(rel) ? rel : path.resolve(ctx.cwd, rel));
+  for (const rel of map.texFiles) {
+    const abs = path.resolve(ctx.cwd, rel);
+    const text = stripComments(await readText(abs).catch(() => ""));
+    for (const m of text.matchAll(/\\includegraphics(?:\[[^\]]*\])*\{([^}]+)\}/g)) {
+      const candidates = graphicsPathCandidates(path.dirname(abs), m[1]);
+      const found = candidates.find(p => fss.existsSync(p));
+      if (found) files.add(path.resolve(found));
+      else if (candidates[0]) missing.add(candidates[0]);
+    }
+  }
+  return { existing: Array.from(files).filter(f => fss.existsSync(f) && compileRelevantExtension(f)), missing: Array.from(missing) };
+}
+
+async function guardCompileRelevantSources(ctx: ExtensionContext, map: PaperMap): Promise<void> {
+  if (!gitGuardEnabled()) return;
+  const rel = await compileRelevantFiles(ctx, map);
+  if (rel.missing.length && ctx.hasUI) ctx.ui.notify(`Compile-relevant referenced file(s) are missing:\n${rel.missing.join("\n")}`, "warning");
+}
+
+async function reportPostCompileUntrackedRelevant(ctx: ExtensionContext, map: PaperMap): Promise<void> {
+  if (!gitGuardEnabled()) return;
+  const rel = await compileRelevantFiles(ctx, map);
+  await autoCommitPaths(ctx, rel.existing, "Commit compile-relevant source changes");
+}
+
+
+async function commitMessageModel(ctx: ExtensionContext): Promise<any | undefined> {
+  const spec = process.env.MECHPI_COMMIT_MODEL ?? "openai/gpt-4o-mini";
+  const sep = spec.includes("/") ? "/" : spec.includes(":") ? ":" : "";
+  if (sep) {
+    const [provider, ...rest] = spec.split(sep);
+    const id = rest.join(sep);
+    const found = (ctx.modelRegistry as any).find?.(provider, id);
+    if (found) return found;
+  }
+  return ctx.model;
+}
+
+function fallbackCommitMessage(reason: string, files: string[]): string {
+  const base = reason.replace(/\s+/g, " ").trim().replace(/[.]+$/g, "");
+  const scope = files.length === 1 ? path.basename(files[0]) : `${files.length} files`;
+  return `${base || "Update source"} (${scope})`.slice(0, 72);
+}
+
+async function generateCommitMessage(ctx: ExtensionContext, root: string, rels: string[], reason: string): Promise<string> {
+  const fallback = fallbackCommitMessage(reason, rels);
+  try {
+    const model = await commitMessageModel(ctx);
+    if (!model) return fallback;
+    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+    if (!auth.ok || !auth.apiKey) return fallback;
+    const stat = await run("git", ["-C", root, "diff", "--cached", "--stat", "--", ...rels], ctx.cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
+    const diff = await run("git", ["-C", root, "diff", "--cached", "--unified=1", "--", ...rels], ctx.cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
+    const msg: Message = { role: "user", timestamp: Date.now(), content: [{ type: "text", text: `Write a concise git commit subject line only (max 72 chars). No markdown, no quotes. Reason: ${reason}\nFiles: ${rels.join(", ")}\n\nSTAT:\n${stat.stdout.slice(0, 1200)}\n\nDIFF:\n${diff.stdout.slice(0, 5000)}` }] };
+    const r = await complete(model, { systemPrompt: "You write terse, accurate git commit subject lines. Output one line only.", messages: [msg] }, { apiKey: auth.apiKey, headers: auth.headers, signal: ctx.signal });
+    const text = r.content.filter((x): x is { type: "text"; text: string } => x.type === "text").map(x => x.text).join(" ").replace(/[\r\n]+/g, " ").replace(/^['\"]|['\"]$/g, "").trim();
+    return (text || fallback).slice(0, 100);
+  } catch {
+    return fallback;
+  }
+}
+
+async function autoCommitPaths(ctx: ExtensionContext, absPaths: string[], reason: string): Promise<void> {
+  if (/^(0|false|off|no)$/i.test(process.env.MECHPI_AUTO_COMMIT_EDITS ?? "1")) return;
+  const existing = unique(absPaths.map(p => path.resolve(p)).filter(p => fss.existsSync(p)));
+  if (!existing.length) return;
+  const groups = new Map<string, string[]>();
+  for (const abs of existing) {
+    const st = await gitPathStatus(ctx, abs);
+    if (!st.root || !st.rel) continue;
+    if (!groups.has(st.root)) groups.set(st.root, []);
+    groups.get(st.root)!.push(st.rel);
+  }
+  for (const [root, relsRaw] of groups) {
+    const rels = unique(relsRaw);
+    const add = await run("git", ["-C", root, "add", "--", ...rels], ctx.cwd).catch(e => ({ code: 1, stdout: "", stderr: String(e) }));
+    if (add.code !== 0) { ctx.ui.notify(`git add failed for ${rels.join(", ")}: ${add.stderr || add.stdout}`, "error"); continue; }
+    const hasStaged = await run("git", ["-C", root, "diff", "--cached", "--quiet", "--", ...rels], ctx.cwd).then(r => r.code !== 0).catch(() => false);
+    if (!hasStaged) continue;
+    const message = await generateCommitMessage(ctx, root, rels, reason);
+    const commit = await run("git", ["-C", root, "commit", "-m", message, "--", ...rels], ctx.cwd).catch(e => ({ code: 1, stdout: "", stderr: String(e) }));
+    if (commit.code === 0) ctx.ui.notify(`Committed ${rels.join(", ")}: ${message}`, "info");
+    else ctx.ui.notify(`git commit failed for ${rels.join(", ")}: ${commit.stderr || commit.stdout}`, "error");
+  }
+}
+
+type BibSyncConfig = { globalBib?: string; enabled: boolean };
+type BibSyncSummary = { globalBib: string; localBib: string; cited: string[]; addedToGlobal: string[]; wroteLocal: number; warnings: string[] };
+
+function configuredGlobalBibPath(cwd: string): string | undefined {
+  const raw = process.env.MECHPI_GLOBAL_BIB;
+  if (raw && !/^(0|false|off|none)$/i.test(raw)) return path.resolve(cwd, expandUserPath(raw));
+  const fallback = expandUserPath("~/Documents/LaTeX/include/all.bib");
+  return fss.existsSync(fallback) ? fallback : undefined;
+}
+
+async function loadBibSyncConfig(cwd: string): Promise<BibSyncConfig> {
+  const globalBib = configuredGlobalBibPath(cwd);
+  return { globalBib, enabled: !!globalBib };
+}
+
+function bibResourceCandidates(raw: string): string[] {
+  return raw.split(",").map(s => s.trim()).filter(Boolean).map(s => s.endsWith(".bib") ? s : `${s}.bib`);
+}
+
+async function detectLocalBibResources(cwd: string, map: PaperMap): Promise<string[]> {
+  const rootText = map.rootTex ? await readText(path.join(cwd, map.rootTex)).catch(() => "") : "";
+  const resources: string[] = [];
+  for (const m of rootText.matchAll(/\\addbibresource(?:\[[^\]]*\])?\{([^}]+)\}/g)) resources.push(...bibResourceCandidates(m[1]));
+  for (const m of rootText.matchAll(/\\bibliography\{([^}]+)\}/g)) resources.push(...bibResourceCandidates(m[1]));
+  if (resources.length) return unique(resources.map(r => path.relative(cwd, path.resolve(path.dirname(path.join(cwd, map.rootTex ?? "main.tex")), r))));
+  return [await detectBibFile(cwd, map)];
+}
+
+function bibEntryMap(entries: BibEntry[]): Map<string, BibEntry> {
+  const m = new Map<string, BibEntry>();
+  for (const e of entries) if (!m.has(e.key)) m.set(e.key, e);
+  return m;
+}
+
+function normalizeBibRaw(raw: string): string {
+  return raw.replace(/\r\n/g, "\n").replace(/\s+/g, " ").replace(/\s*([={},])\s*/g, "$1").trim().toLowerCase();
+}
+
+function bibEntryIdentity(e: BibEntry): string {
+  const doi = normalizeDoi(e.fields.doi);
+  if (doi) return `doi:${doi.toLowerCase()}`;
+  const title = normalizeTitleKey(e.fields.title ?? "");
+  return title ? `title:${title}` : `key:${e.key.toLowerCase()}`;
+}
+
+function replaceBibEntryRaw(text: string, oldEntry: BibEntry, newRaw: string): string {
+  const first = text.indexOf(oldEntry.raw);
+  if (first < 0) return `${text.replace(/\s*$/, "\n\n")}${newRaw.trim()}\n`;
+  return text.slice(0, first) + newRaw.trim() + text.slice(first + oldEntry.raw.length);
+}
+
+async function chooseBibSyncConflict(ctx: ExtensionContext, key: string, globalEntry: BibEntry, localEntry: BibEntry): Promise<"global" | "local" | "edit" | "cancel"> {
+  if (!ctx.hasUI) return "cancel";
+  const choice = await mechIngestSelect(ctx, `BibTeX conflict for ${key}`, [
+    `Keep global entry (${globalEntry.file}:${globalEntry.line})`,
+    `Replace global with local entry (${localEntry.file}:${localEntry.line})`,
+    "Edit replacement BibTeX manually",
+    "Cancel compile",
+  ]);
+  if (!choice) return "cancel";
+  if (choice.startsWith("Keep")) return "global";
+  if (choice.startsWith("Replace")) return "local";
+  if (choice.startsWith("Edit")) return "edit";
+  return "cancel";
+}
+
+async function resolveGlobalBibGitGuard(ctx: ExtensionContext, globalBib: string): Promise<void> {
+  const dir = path.dirname(globalBib);
+  const root = await run("git", ["-C", dir, "rev-parse", "--show-toplevel"], ctx.cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
+  if (root.code !== 0) throw new Error(`Global BibTeX file is not inside a git repository: ${globalBib}`);
+}
+
+async function gitPathClean(ctx: ExtensionContext, absPath: string): Promise<boolean> {
+  const st = await gitPathStatus(ctx, absPath);
+  return Boolean(st.root && st.tracked && !st.porcelain);
+}
+
+function auxCitedKeys(auxText: string): string[] {
+  const out: string[] = [];
+  for (const m of auxText.matchAll(/\\citation\{([^}]*)\}/g)) out.push(...m[1].split(",").map(s => s.trim()).filter(Boolean));
+  for (const m of auxText.matchAll(/\\abx@aux@cite\{[^}]*\}\{([^}]*)\}/g)) out.push(m[1].trim());
+  for (const m of auxText.matchAll(/\\abx@aux@segm\{[^}]*\}\{[^}]*\}\{([^}]*)\}/g)) out.push(m[1].trim());
+  return unique(out.filter(k => k && k !== "*"));
+}
+
+async function citedKeysForBibSync(cwd: string, map: PaperMap): Promise<string[]> {
+  const keys = new Set<string>();
+  for (const c of map.citations) if (c.key && c.key !== "*") keys.add(c.key);
+  for (const rel of map.texFiles) {
+    const clean = stripComments(await readText(path.join(cwd, rel)).catch(() => ""));
+    for (const m of clean.matchAll(/\\(?:cite|citet|citep|citealp|citeauthor|citeyear|citeyearpar|nocite|parencite|textcite|autocite|supercite|footcite|fullcite)(?:\[[^\]]*\])*\{([^}]+)\}/g)) {
+      for (const k of m[1].split(",").map(s => s.trim()).filter(Boolean)) if (k !== "*") keys.add(k);
+    }
+  }
+  if (map.rootTex) {
+    const auxPath = path.join(cwd, map.rootTex.replace(/\.tex$/i, ".aux"));
+    for (const k of auxCitedKeys(await readText(auxPath).catch(() => ""))) keys.add(k);
+  }
+  return Array.from(keys);
+}
+
+async function chooseLocalBibTarget(ctx: ExtensionContext, resources: string[]): Promise<string | null> {
+  const existing = resources.filter(Boolean);
+  if (existing.length <= 1 || !ctx.hasUI) return existing[0] ?? null;
+  return await mechIngestSelect(ctx, "Choose local .bib to synchronize/prune", existing);
+}
+
+async function writeMinimalLocalBibWithBibtool(ctx: ExtensionContext, cited: string[], mergedBibText: string, localBibAbs: string): Promise<boolean> {
+  if (!commandExists("bibtool")) return false;
+  const tmp = path.join(ctx.cwd, ".mechpi", "bibsync-tmp");
+  await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+  await fs.mkdir(tmp, { recursive: true });
+  const merged = path.join(tmp, "merged.bib");
+  const aux = path.join(tmp, "mechpi-bibsync.aux");
+  const out = path.join(tmp, "local.bib");
+  await fs.writeFile(merged, mergedBibText);
+  await fs.writeFile(aux, [`\\relax`, `\\citation{${cited.join(",")}}`, `\\bibdata{merged}`, `\\bibstyle{plain}`].join("\n"));
+  const r = await run("bibtool", ["-c", "-x", aux, "-i", merged, "-o", out], ctx.cwd).catch(e => ({ code: 1, stdout: "", stderr: String(e) }));
+  if (r.code !== 0) return false;
+  await fs.mkdir(path.dirname(localBibAbs), { recursive: true });
+  if (!(await guardPathBeforeWrite(ctx, localBibAbs, `rewriting minimal local BibTeX ${path.basename(localBibAbs)}`, { offerGitAdd: true }))) throw new Error("Cancelled by git guard.");
+  await fs.writeFile(localBibAbs, await readText(out));
+  await autoCommitPaths(ctx, [localBibAbs], `Rewrite minimal local BibTeX ${path.basename(localBibAbs)}`);
+  return true;
+}
+
+async function syncGlobalBibBeforeCompile(ctx: ExtensionContext, map: PaperMap): Promise<BibSyncSummary | null> {
+  const cfg = await loadBibSyncConfig(ctx.cwd);
+  if (!cfg.enabled || !cfg.globalBib) return null;
+  const globalBib = cfg.globalBib;
+  if (!(await exists(globalBib))) throw new Error(`Configured global BibTeX file not found: ${globalBib}`);
+  const resources = await detectLocalBibResources(ctx.cwd, map);
+  const localRel = await chooseLocalBibTarget(ctx, resources);
+  if (!localRel) throw new Error("No local BibTeX resource found; add \\bibliography{...} or \\addbibresource{...} first.");
+  const localBibAbs = path.isAbsolute(localRel) ? localRel : path.resolve(ctx.cwd, localRel);
+  const localTexts = await Promise.all(resources.map(async rel => ({ rel, abs: path.isAbsolute(rel) ? rel : path.resolve(ctx.cwd, rel), text: await readText(path.isAbsolute(rel) ? rel : path.resolve(ctx.cwd, rel)).catch(() => "") })));
+  const globalBibWasClean = await gitPathClean(ctx, globalBib);
+  let globalText = await readText(globalBib);
+  let globalEntries = parseBibEntries(globalText, globalBib);
+  const localEntries = localTexts.flatMap(x => parseBibEntries(x.text, x.rel));
+  const globalByKey = bibEntryMap(globalEntries);
+  const warnings: string[] = [];
+  const addedToGlobal: string[] = [];
+
+  await resolveGlobalBibGitGuard(ctx, globalBib);
+
+  for (const local of localEntries) {
+    const global = globalByKey.get(local.key);
+    if (!global) {
+      globalText = `${globalText.replace(/\s*$/, "\n\n")}${local.raw.trim()}\n`;
+      globalByKey.set(local.key, { ...local, file: globalBib });
+      addedToGlobal.push(local.key);
+      continue;
+    }
+    if (normalizeBibRaw(global.raw) === normalizeBibRaw(local.raw)) continue;
+    const sameIdentity = bibEntryIdentity(global) === bibEntryIdentity(local);
+    if (sameIdentity) { warnings.push(`Using global version of ${local.key}; local differs only in fields/format.`); continue; }
+    const decision = await chooseBibSyncConflict(ctx, local.key, global, local);
+    if (decision === "cancel") throw new Error(`Cancelled BibTeX conflict resolution for ${local.key}.`);
+    if (decision === "global") { warnings.push(`Kept global conflicting entry ${local.key}; local ignored.`); continue; }
+    let replacement = local.raw;
+    if (decision === "edit") {
+      const edited = await openUniformPopupEditor(ctx, { title: `Edit replacement BibTeX for ${local.key}`, initialText: local.raw, syntaxMode: "bibtex", help: "Ctrl-S/:wq accepts replacement; Ctrl-C/:q cancels compile." });
+      if (edited === null) throw new Error(`Cancelled BibTeX conflict edit for ${local.key}.`);
+      const parsed = parseBibEntries(edited, globalBib);
+      if (parsed.length !== 1 || parsed[0].key !== local.key) throw new Error(`Edited replacement must contain exactly one entry with key ${local.key}.`);
+      replacement = edited;
+    }
+    globalText = replaceBibEntryRaw(globalText, global, replacement);
+    globalByKey.set(local.key, parseBibEntries(replacement, globalBib)[0] ?? local);
+    warnings.push(`Replaced global conflicting entry ${local.key} from local/UI choice.`);
+  }
+
+  if (addedToGlobal.length || warnings.some(w => w.startsWith("Replaced global"))) {
+    if (!(await guardPathBeforeWrite(ctx, globalBib, `updating global BibTeX ${path.basename(globalBib)}`))) throw new Error("Cancelled by git guard.");
+    await fs.writeFile(globalBib, globalText);
+    if (globalBibWasClean) await autoCommitPaths(ctx, [globalBib], `Update global BibTeX ${path.basename(globalBib)}`);
+    globalText = await readText(globalBib);
+    globalEntries = parseBibEntries(globalText, globalBib);
+  }
+
+  const cited = await citedKeysForBibSync(ctx.cwd, map);
+  const globalAfter = bibEntryMap(globalEntries);
+  const localByKey = bibEntryMap(localEntries);
+  const missing = cited.filter(k => !globalAfter.has(k) && !localByKey.has(k));
+  if (missing.length) throw new Error(`Cited BibTeX key(s) missing from both global and local databases: ${missing.join(", ")}`);
+  // If a cited local entry was just appended but globalEntries wasn't refreshed for some reason, merge it for extraction.
+  const mergedText = `${globalText.replace(/\s*$/, "\n\n")}${cited.filter(k => !globalAfter.has(k) && localByKey.has(k)).map(k => localByKey.get(k)!.raw.trim()).join("\n\n")}`;
+  const usedBibtool = await writeMinimalLocalBibWithBibtool(ctx, cited, mergedText, localBibAbs);
+  if (!usedBibtool) {
+    const mergedByKey = bibEntryMap([...parseBibEntries(mergedText, globalBib), ...localEntries]);
+    const body = cited.map(k => mergedByKey.get(k)?.raw.trim()).filter(Boolean).join("\n\n");
+    await fs.mkdir(path.dirname(localBibAbs), { recursive: true });
+    if (!(await guardPathBeforeWrite(ctx, localBibAbs, `rewriting minimal local BibTeX ${path.basename(localBibAbs)}`, { offerGitAdd: true }))) throw new Error("Cancelled by git guard.");
+    await fs.writeFile(localBibAbs, body ? `${body}\n` : "");
+    await autoCommitPaths(ctx, [localBibAbs], `Rewrite minimal local BibTeX ${path.basename(localBibAbs)}`);
+    warnings.push("BibTool not available or extraction failed; wrote raw selected entries without macro/crossref expansion.");
+  }
+  return { globalBib, localBib: path.relative(ctx.cwd, localBibAbs), cited, addedToGlobal, wroteLocal: cited.length, warnings };
+}
+
+function formatBibSyncSummary(summary: BibSyncSummary | null): string {
+  if (!summary) return "Bib sync disabled";
+  const parts = [`bibsync: ${summary.cited.length} cited key(s), local ${summary.localBib}`];
+  if (summary.addedToGlobal.length) parts.push(`added to global: ${summary.addedToGlobal.join(", ")}`);
+  if (summary.warnings.length) parts.push(`warnings: ${summary.warnings.join("; ")}`);
+  return parts.join("; ");
 }
 
 function bibEntryToCandidate(e: BibEntry, prompt: string): CitationCandidate {
@@ -3348,7 +4386,7 @@ async function keepLocalCitationDocument(ctx: ExtensionContext, c: CitationCandi
   const local = await findLocalDocumentForCandidate(ctx.cwd, c);
   if (local) {
     const converted = await convertDocumentToText(ctx.cwd, local, sourceId);
-    return { stored: converted.stored, note: `copied local document from ${local}` };
+    return { stored: converted.stored, note: `stored local document from ${local}${converted.note ? ` (${converted.note})` : ""}` };
   }
   const web = await storeWebDocumentForCandidate(ctx.cwd, c, sourceId);
   if (web?.stored) return { stored: web.stored, note: web.note ?? "downloaded web document" };
@@ -3363,7 +4401,8 @@ function addBibFieldToEntryRaw(raw: string, field: string, value: string): strin
   return `${raw.slice(0, idx).trimEnd()},\n  ${field} = {${value}}\n${raw.slice(idx)}`;
 }
 
-async function updateExistingBibEntryField(cwd: string, bibRel: string, key: string, field: string, value: string): Promise<boolean> {
+async function updateExistingBibEntryField(ctx: ExtensionContext, bibRel: string, key: string, field: string, value: string): Promise<boolean> {
+  const cwd = ctx.cwd;
   const abs = path.join(cwd, bibRel);
   const text = await readText(abs).catch(() => "");
   const entries = parseBibEntries(text, bibRel);
@@ -3371,7 +4410,9 @@ async function updateExistingBibEntryField(cwd: string, bibRel: string, key: str
   if (!entry) return false;
   const nextRaw = addBibFieldToEntryRaw(entry.raw, field, value);
   if (nextRaw === entry.raw) return false;
+  if (!(await guardPathBeforeWrite(ctx, abs, `updating BibTeX field ${field} for ${key}`))) return false;
   await fs.writeFile(abs, text.slice(0, text.indexOf(entry.raw)) + nextRaw + text.slice(text.indexOf(entry.raw) + entry.raw.length));
+  await autoCommitPaths(ctx, [abs], `Update BibTeX field ${field} for ${key}`);
   return true;
 }
 
@@ -3417,13 +4458,16 @@ async function insertCitationCandidates(ctx: ExtensionContext, map: PaperMap, ca
   const bibRel = await detectBibFile(ctx.cwd, map);
   const toAppend = prepared.filter(p => !p.existed);
   if (toAppend.length) {
-    await fs.mkdir(path.dirname(path.join(ctx.cwd, bibRel)), { recursive: true });
-    const old = await readText(path.join(ctx.cwd, bibRel)).catch(() => "");
-    await fs.writeFile(path.join(ctx.cwd, bibRel), `${old.trimEnd()}\n\n${toAppend.map(p => p.bibtex.trim()).join("\n\n")}\n`);
+    const bibAbs = path.join(ctx.cwd, bibRel);
+    await fs.mkdir(path.dirname(bibAbs), { recursive: true });
+    const old = await readText(bibAbs).catch(() => "");
+    if (!(await guardPathBeforeWrite(ctx, bibAbs, `adding BibTeX citation(s) to ${bibRel}`, { offerGitAdd: true }))) return "Cancelled by git guard.";
+    await fs.writeFile(bibAbs, `${old.trimEnd()}\n\n${toAppend.map(p => p.bibtex.trim()).join("\n\n")}\n`);
+    await autoCommitPaths(ctx, [bibAbs], `Add BibTeX citation(s) to ${bibRel}`);
   }
 
   if (options.keepLocal) {
-    for (const p of prepared.filter(p => p.existed && p.keepStored)) await updateExistingBibEntryField(ctx.cwd, bibRel, p.key, "file", p.keepStored!);
+    for (const p of prepared.filter(p => p.existed && p.keepStored)) await updateExistingBibEntryField(ctx, bibRel, p.key, "file", p.keepStored!);
   }
 
   const keys = prepared.map(p => p.key);
@@ -3454,7 +4498,11 @@ async function insertCitationCandidates(ctx: ExtensionContext, map: PaperMap, ca
   const texAbs = path.join(ctx.cwd, loc.file);
   const tex = await readText(texAbs);
   const inserted = insertCitationIntoText(tex, loc, citeCommand, keys.join(","));
-  if (inserted.changed) await fs.writeFile(texAbs, inserted.text);
+  if (inserted.changed) {
+    if (!(await guardPathBeforeWrite(ctx, texAbs, `inserting citation into ${loc.file}`))) return "Cancelled by git guard.";
+    await fs.writeFile(texAbs, inserted.text);
+    await autoCommitPaths(ctx, [texAbs], `Insert citation into ${loc.file}`);
+  }
   await writeMap(ctx.cwd, await buildPaperMap(ctx.cwd));
   return `${toAppend.length ? "Added" : "Reused"} ${keys.join(", ")} in ${bibRel}. ${inserted.note}${keepNote}`;
 }
@@ -3579,7 +4627,9 @@ async function saveBibEntryEdit(ctx: ExtensionContext, e: BibEntry, newRaw: stri
   if (first < 0) throw new Error(`Could not find the original BibTeX entry ${e.key} in ${e.file}.`);
   if (source.indexOf(e.raw, first + e.raw.length) >= 0) throw new Error(`BibTeX entry source is not unique in ${e.file}; refusing automatic replacement.`);
   const replacement = restoreLineEndingsForSource(newRaw, source);
+  if (!(await guardPathBeforeWrite(ctx, abs, `saving BibTeX edit in ${e.file}`))) throw new Error("Cancelled by git guard.");
   await fs.writeFile(abs, source.slice(0, first) + replacement + source.slice(first + e.raw.length));
+  await autoCommitPaths(ctx, [abs], `Save BibTeX edit in ${e.file}`);
   await writeMap(ctx.cwd, await buildPaperMap(ctx.cwd));
   return `${e.file}:${e.line}`;
 }
@@ -3597,7 +4647,10 @@ async function openCitationEditor(ctx: ExtensionContext, e: BibEntry): Promise<s
     const edited = await openUniformPopupEditor(ctx, {
       title: `Edit citation ${e.key} (${e.file}:${e.line})`,
       initialText: editorText,
-      help: "Same edit keys as the prompt. Ctrl+R refreshes preview; :w writes+refreshes; :wq/Ctrl+S saves and closes; Ctrl+C/:q cancels.",
+      syntaxMode: "bibtex",
+      lineNumberStart: e.line,
+      lineNumberLabel: e.file,
+      help: "Same edit keys as the prompt. Ctrl+R refreshes preview; :w writes+refreshes; :wq/Ctrl+S saves and closes; :<line> jumps by source line; Ctrl+C/:q cancels.",
       renderPreview: (width: number) => {
         const lines: string[] = [];
         lines.push(truncateToWidth(`Formatted reference preview: ${e.key}`, width));
@@ -3658,7 +4711,7 @@ function rankGotoCitationCandidates(candidates: CitationCandidate[], query: stri
 
 function citationCommandAutocompleteItems(command: string, candidates: CitationCandidate[], query: string): AutocompleteItem[] {
   return rankGotoCitationCandidates(candidates, query).slice(0, 12).map(c => ({
-    value: `${command} ${c.key ?? c.title}`,
+    value: `/${command} ${c.key ?? c.title}`,
     label: c.key ?? c.title,
     description: `${c.title}${c.year ? ` (${c.year})` : ""}${c.venue ? ` — ${c.venue}` : ""}`,
   }));
@@ -3696,13 +4749,16 @@ function equationAutocompleteItems(equations: EquationInfo[], query: string): Au
   return rankEquations(equations, query).slice(0, 12).map(e => {
     const labels = e.labels ?? (e.label ? [e.label] : []);
     const label = labels[0] ?? (e.numbers?.[0]?.number ? `number:${e.numbers[0].number}` : `${e.file}:${e.lineStart}`);
-    const value = labels[0] ? `mecheqedit ${labels[0]}` : e.numbers?.[0]?.number ? `mecheqedit number:${e.numbers[0].number}` : `mecheqedit contains:${equationOnlyPreview(e.tex).slice(0, 48)}`;
+    const value = labels[0] ? `/mecheqedit ${labels[0]}` : e.numbers?.[0]?.number ? `/mecheqedit number:${e.numbers[0].number}` : `/mecheqedit contains:${equationOnlyPreview(e.tex).slice(0, 48)}`;
     return { value, label, description: `${e.file}:${e.lineStart}-${e.lineEnd} • ${equationNumberSummary(e)} • ${equationOnlyPreview(e.tex).slice(0, 120)}` };
   });
 }
 
 type MechIngestItemType = "bib" | "file";
 type MechIngestItem = { id: string; type: MechIngestItemType; label: string; description: string; path?: string; bib?: BibEntry };
+type MechIngestConvertedDocument = { text: string; stored?: string; note?: string };
+type MechIngestPreparedSource = { id: string; original?: string; converted?: MechIngestConvertedDocument; note?: string };
+type MechIngestSelection = { ids: string[]; prepared: MechIngestPreparedSource[] };
 type MechIngestSource = { id: string; label: string; type: string; original?: string; stored?: string; status: string; note?: string };
 type MechIngestManifest = { selectedIds: string[]; sources: MechIngestSource[]; updatedAt: string; embedding?: MechIngestEmbeddingInfo; retrievalNote?: string };
 type MechIngestEmbeddingInfo = { provider: string; model: string; dimensions: number };
@@ -3710,6 +4766,85 @@ type MechIngestChunk = { id: string; sourceId: string; label: string; text: stri
 type MechIngestStore = { version: 2; updatedAt: string; chunks: MechIngestChunk[]; embedding?: MechIngestEmbeddingInfo; retrievalNote?: string };
 type MechEmbeddingResult = { info: MechIngestEmbeddingInfo; embeddings: number[][] };
 type MechIngestProgress = (fraction: number, message: string) => void;
+type MechIngestDrillLayer = { parentHandle?: () => OverlayHandle | null; depth: number };
+
+function nextMechIngestDrillLayer(layer?: MechIngestDrillLayer): MechIngestDrillLayer | undefined {
+  if (!layer) return undefined;
+  return { parentHandle: layer.parentHandle, depth: layer.depth + 1 };
+}
+
+function mechIngestDrillOverlayOptions(layer?: MechIngestDrillLayer, options: OverlayOptions = {}): OverlayOptions {
+  const depth = Math.max(0, layer?.depth ?? 0);
+  const step = Math.min(depth, 4);
+  return {
+    anchor: "center",
+    offsetX: step * 4,
+    offsetY: step * 2,
+    ...options,
+  };
+}
+
+async function mechIngestDrillCustom<T>(
+  ctx: ExtensionContext,
+  layer: MechIngestDrillLayer | undefined,
+  factory: (tui: TUI, theme: any, keybindings: any, done: (value: T) => void) => any,
+  overlayOptions: OverlayOptions,
+): Promise<T> {
+  const parent = layer?.parentHandle?.() ?? null;
+  return await ctx.ui.custom<T>(factory, {
+    overlay: true,
+    overlayOptions: mechIngestDrillOverlayOptions(layer, overlayOptions),
+    onHandle: (handle: OverlayHandle) => {
+      // Newer drill-down overlays must be the visual front layer even while the
+      // parent /mechingest overlay remains mounted underneath for h/l backtracking.
+      try { parent?.unfocus?.(); } catch {}
+      setTimeout(() => {
+        try { handle.focus(); } catch {}
+      }, 0);
+    },
+  });
+}
+
+class MechIngestChoicePicker implements Focusable {
+  private selected = 0;
+  private _focused = false;
+  constructor(private tui: TUI, private theme: any, private title: string, private choices: string[], private done: (choice: string | null) => void) {}
+  get focused() { return this._focused; }
+  set focused(v: boolean) { this._focused = v; }
+  invalidate(): void {}
+  render(width: number): string[] {
+    if (this.selected >= this.choices.length) this.selected = Math.max(0, this.choices.length - 1);
+    const lines: string[] = [];
+    lines.push(this.theme.fg("accent", "─".repeat(width)));
+    lines.push(truncateToWidth(this.theme.fg("accent", this.theme.bold(this.title)) + this.theme.fg("dim", "  j/k move • l/enter accept • h/q cancel"), width));
+    lines.push(this.theme.fg("accent", "─".repeat(width)));
+    this.choices.forEach((choice, i) => {
+      const line = `${i === this.selected ? "▶" : " "} ${choice}`;
+      lines.push(truncateToWidth(i === this.selected ? this.theme.bg("selectedBg", this.theme.fg("accent", line)) : line, width));
+    });
+    if (!this.choices.length) lines.push(this.theme.fg("warning", "No choices available."));
+    lines.push(this.theme.fg("accent", "─".repeat(width)));
+    return lines;
+  }
+  handleInput(data: string): void {
+    const ch = printableKey(data);
+    if (matchesKey(data, Key.escape) || ch === "q" || ch === "h" || matchesKey(data, Key.left)) { this.done(null); return; }
+    if (matchesKey(data, Key.enter) || matchesKey(data, Key.space) || ch === "l" || matchesKey(data, Key.right)) { this.done(this.choices[this.selected] ?? null); return; }
+    if (ch === "j" || matchesKey(data, Key.down) || matchesKey(data, Key.tab)) { this.selected = Math.min(Math.max(0, this.choices.length - 1), this.selected + 1); this.tui.requestRender(); return; }
+    if (ch === "k" || matchesKey(data, Key.up) || matchesKey(data, Key.shift("tab"))) { this.selected = Math.max(0, this.selected - 1); this.tui.requestRender(); return; }
+  }
+}
+
+async function mechIngestSelect(ctx: ExtensionContext, title: string, choices: string[], layer?: MechIngestDrillLayer): Promise<string | null> {
+  if (!ctx.hasUI) return choices[0] ?? null;
+  const childLayer = nextMechIngestDrillLayer(layer);
+  return await mechIngestDrillCustom<string | null>(
+    ctx,
+    childLayer,
+    (tui, theme, _kb, done) => opaquePopup(new MechIngestChoicePicker(tui, theme, title, choices, done), theme),
+    { width: "86%", maxHeight: "70%" },
+  );
+}
 
 function mechIngestRoot(cwd: string): string { return path.join(cwd, ".mechpi", "ingest"); }
 function mechIngestManifestPath(cwd: string): string { return path.join(mechIngestRoot(cwd), "manifest.json"); }
@@ -3736,15 +4871,16 @@ function mechIngestAgentsBlock(): string {
     "",
     "When `.mechpi/ingest/vector-store.json` exists, treat it as the first-pass text-embedding retrieval cache for questions about ingested references, background papers, and remembered phrases.",
     "",
-    "- First use the `MECH-PI INGESTED REFERENCE CONTEXT` already injected into the prompt; answer from it when it is sufficient.",
-    "- Do not run broad filesystem searches just to duplicate vector-store retrieval. If the injected context is insufficient, inspect `.mechpi/ingest/manifest.json`, `.mechpi/ingest/vector-store.json`, or `.mechpi/ingest/text/` before using wider `find`/`rg` searches.",
-    "- Use source files after retrieval only to verify exact quotations, line numbers, or manuscript source-of-truth claims.",
+    "- Use the `mech_retrieve` tool for targeted retrieval from `.mechpi/ingest/vector-store.json` instead of reading or sending the whole vector store.",
+    "- Do not run broad filesystem searches just to duplicate vector-store retrieval. If retrieval is insufficient, inspect `.mechpi/ingest/manifest.json`, `.mechpi/ingest/text/`, or source files to verify exact quotations/line numbers before wider `find`/`rg` searches.",
+    "- If `MECH-PI INGESTED REFERENCE CONTEXT` is present, it is auto-retrieved context; use it first when sufficient.",
     "- For manuscript mechanics claims, the TeX source and `.mechpi/paper-map.json` still override retrieved reference chunks.",
     MECHPI_INGEST_AGENTS_END,
   ].join("\n");
 }
 
-async function ensureMechIngestAgentsGuidance(cwd: string): Promise<"created" | "updated" | "unchanged"> {
+async function ensureMechIngestAgentsGuidance(ctxOrCwd: ExtensionContext | string): Promise<"created" | "updated" | "unchanged"> {
+  const cwd = typeof ctxOrCwd === "string" ? ctxOrCwd : ctxOrCwd.cwd;
   const file = mechIngestAgentsPath(cwd);
   const block = mechIngestAgentsBlock();
   let existing = "";
@@ -3757,6 +4893,10 @@ async function ensureMechIngestAgentsGuidance(cwd: string): Promise<"created" | 
       ? existing.replace(marked, block)
       : `${existing.replace(/\s*$/, "")}\n\n${block}\n`;
   if (hadFile && next === existing) return "unchanged";
+  if (typeof ctxOrCwd !== "string") {
+    const ok = await guardPathBeforeWrite(ctxOrCwd, file, `${hadFile ? "updating" : "creating"} AGENTS.md with mech-pi ingest guidance`, { offerGitAdd: true });
+    if (!ok) throw new Error("Cancelled by git guard while updating AGENTS.md.");
+  }
   await fs.writeFile(file, next);
   return hadFile ? "updated" : "created";
 }
@@ -3799,12 +4939,13 @@ function scoreIngestItem(query: string, item: MechIngestItem): number {
 }
 
 function mechIngestAutocompleteItems(items: MechIngestItem[], query: string): AutocompleteItem[] {
+  if (!query.trim()) return [];
   return items
     .map(item => ({ item, score: scoreIngestItem(query, item) }))
-    .filter(x => !query.trim() || x.score > 0)
+    .filter(x => x.score > 0)
     .sort((a, b) => b.score - a.score || a.item.label.localeCompare(b.item.label))
     .slice(0, 12)
-    .map(({ item }) => ({ value: `mechingest ${item.label}`, label: item.label, description: `[${item.type}] ${item.description}` }));
+    .map(({ item }) => ({ value: `/mechingest ${item.label}`, label: item.label, description: `[${item.type}] ${item.description}` }));
 }
 
 async function discoverMechIngestItems(ctx: ExtensionContext): Promise<MechIngestItem[]> {
@@ -3849,20 +4990,27 @@ class MechIngestPicker implements Focusable {
   private searchEditing = false;
   private loadingSummary = false;
   private summaries = new Map<string, string>();
+  private prepared = new Map<string, MechIngestPreparedSource>();
+  private rectifying = false;
+  private suppressSelectorEnterUntil = 0;
   private _focused = false;
-  constructor(private ctx: ExtensionContext, private tui: TUI, private theme: any, private items: MechIngestItem[], initialQuery: string, manifest: MechIngestManifest, private done: (ids: string[] | null) => void) {
+  constructor(private ctx: ExtensionContext, private tui: TUI, private theme: any, private items: MechIngestItem[], initialQuery: string, manifest: MechIngestManifest, private layer: MechIngestDrillLayer | undefined, private done: (selection: MechIngestSelection | null) => void) {
     this.query = initialQuery.trim();
-    this.checked = new Set(manifest.selectedIds ?? []);
     this.sourceById = new Map((manifest.sources ?? []).map(s => [s.id, s]));
     this.ingested = new Set((manifest.sources ?? []).filter(s => s.status === "ok").map(s => s.id));
+    this.checked = new Set((manifest.selectedIds ?? []).filter(id => this.ingested.has(id)));
   }
   get focused() { return this._focused; }
   set focused(v: boolean) { this._focused = v; }
   invalidate(): void {}
   private matches(): MechIngestItem[] {
+    if (!this.query) {
+      if (this.selected >= this.items.length) this.selected = Math.max(0, this.items.length - 1);
+      return this.items;
+    }
     const ranked = this.items
       .map(item => ({ item, score: scoreIngestItem(this.query, item) }))
-      .filter(x => !this.query || x.score > 0)
+      .filter(x => x.score > 0)
       .sort((a, b) => b.score - a.score || a.item.label.localeCompare(b.item.label))
       .map(x => x.item);
     if (this.selected >= ranked.length) this.selected = Math.max(0, ranked.length - 1);
@@ -3886,7 +5034,7 @@ class MechIngestPicker implements Focusable {
     this.tui.requestRender();
   }
   private finish(ids: string[] | null): void {
-    this.done(ids);
+    this.done(ids ? { ids, prepared: Array.from(this.prepared.values()).filter(p => ids.includes(p.id)) } : null);
     setTimeout(() => this.tui.requestRender(true), 0);
   }
   private openSourceDocument(source: MechIngestSource | undefined): void {
@@ -3908,7 +5056,7 @@ class MechIngestPicker implements Focusable {
     lines.push(this.theme.fg("accent", "─".repeat(width)));
     if (this.mode === "list") {
       const staged = Array.from(this.checked).filter(id => !this.ingested.has(id)).length;
-      lines.push(truncateToWidth(this.theme.fg("accent", this.theme.bold(`Mech ingest (${this.checked.size} selected, ${staged} staged)`)) + this.theme.fg("dim", this.searchEditing ? "  SEARCH • type/edit • enter selector • j/q quit" : "  selector • esc search • space stage • l summary • enter rebuild • h/q cancel"), width));
+      lines.push(truncateToWidth(this.theme.fg("accent", this.theme.bold(`Mech ingest (${this.checked.size} selected, ${staged} staged)`)) + this.theme.fg("dim", this.searchEditing ? "  SEARCH • type/edit • enter selector • j/q quit" : this.rectifying ? "  resolving source..." : "  selector • esc search • j/k move • l resolve/detail • space select • enter rebuild • q cancel"), width));
       const searchText = this.query || this.theme.fg("dim", "(all .bib refs and local documents)");
       lines.push(truncateToWidth(`${this.theme.fg("success", "✓")} ingested   ${this.theme.fg("dim", "✓")} staged   ${this.searchEditing ? this.theme.fg("accent", "search>") : "search:"} ${searchText}${this.searchEditing ? this.theme.fg("accent", "▌") : ""}`, width));
       lines.push(this.theme.fg("accent", "─".repeat(width)));
@@ -3924,7 +5072,7 @@ class MechIngestPicker implements Focusable {
     } else if (this.mode === "detail") {
       const item = this.selectedItem();
       const source = this.selectedSource();
-      lines.push(truncateToWidth(this.theme.fg("accent", this.theme.bold("Ingested document summary")) + this.theme.fg("dim", "  h list • l open document • space stage/unstage • enter rebuild • q cancel"), width));
+      lines.push(truncateToWidth(this.theme.fg("accent", this.theme.bold("Ingested document summary")) + this.theme.fg("dim", "  h list • l open document • space select/unselect • enter rebuild • q cancel"), width));
       lines.push(truncateToWidth(`${item?.label ?? "(none)"}`, width));
       if (!source) {
         lines.push(this.theme.fg("warning", "This item is staged or not yet ingested; no stored source/text is available to preview."));
@@ -3939,11 +5087,47 @@ class MechIngestPicker implements Focusable {
     lines.push(this.theme.fg("accent", "─".repeat(width)));
     return lines;
   }
+  private async toggleStaged(item: MechIngestItem): Promise<void> {
+    if (this.checked.has(item.id)) {
+      this.checked.delete(item.id);
+      this.prepared.delete(item.id);
+      const existing = this.sourceById.get(item.id);
+      if (existing?.status === "staged") this.sourceById.delete(item.id);
+      await cleanupIngestArtifactsForSource(this.ctx.cwd, hashId(item.id)).catch(() => {});
+      this.tui.requestRender();
+      return;
+    }
+    if (item.type === "file" && item.path) {
+      this.checked.add(item.id);
+      this.prepared.set(item.id, { id: item.id, original: item.path, note: "User-staged local file." });
+      this.sourceById.set(item.id, { id: item.id, label: item.label, type: item.type, original: item.path, status: "staged", note: "User-staged local file; extraction happens when the selector exits." });
+      this.tui.requestRender();
+      return;
+    }
+    if (item.type !== "bib" || !item.bib) return;
+    this.rectifying = true;
+    this.tui.requestRender();
+    try {
+      const prepared = await prepareBibItemForIngestStaging(this.ctx, item, status => { this.ctx.ui.setStatus("mechingest", this.ctx.ui.theme.fg("warning", status)); }, this.layer);
+      if (prepared) {
+        this.checked.add(item.id);
+        this.prepared.set(item.id, prepared);
+        this.sourceById.set(item.id, { id: item.id, label: item.label, type: item.type, original: prepared.original, stored: prepared.converted?.stored, status: "staged", note: prepared.note ?? prepared.converted?.note ?? "Confirmed for ingestion; vector store updates when selector exits." });
+      }
+    } catch (err) {
+      this.ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      this.rectifying = false;
+      this.ctx.ui.setStatus("mechingest", undefined);
+      this.tui.requestRender(true);
+    }
+  }
   handleInput(data: string): void {
+    if (this.rectifying) return;
     const ch = printableKey(data);
-    const matches = this.matches();
+    const isEnter = matchesKey(data, Key.enter) || matchesKey(data, Key.return) || data === "\r" || data === "\n";
     if (this.mode === "list" && this.searchEditing) {
-      if (matchesKey(data, Key.enter)) { this.searchEditing = false; this.tui.requestRender(); return; }
+      if (isEnter) { this.searchEditing = false; this.suppressSelectorEnterUntil = Date.now() + 300; this.tui.requestRender(); return; }
       if (ch === "j" || ch === "q") { this.finish(null); return; }
       if (matchesKey(data, Key.escape)) { this.finish(null); return; }
       if (matchesKey(data, Key.backspace) || data.includes("\x7f") || data.includes("\x08")) { this.query = this.query.slice(0, -1); this.selected = 0; this.tui.requestRender(); return; }
@@ -3951,22 +5135,34 @@ class MechIngestPicker implements Focusable {
       if (ch && ch.length === 1) { this.query += ch; this.selected = 0; this.tui.requestRender(); return; }
       return;
     }
+    const matches = this.matches();
     if (matchesKey(data, Key.escape) && this.mode === "list") { this.searchEditing = true; this.tui.requestRender(); return; }
-    if (matchesKey(data, Key.escape) || ch === "q" || (this.mode === "list" && (ch === "h" || matchesKey(data, Key.left)))) { this.finish(null); return; }
-    if (matchesKey(data, Key.enter)) { this.finish(Array.from(this.checked)); return; }
+    if (matchesKey(data, Key.escape) || ch === "q") { this.finish(null); return; }
+    if (this.mode === "list" && (ch === "h" || matchesKey(data, Key.left))) { this.tui.requestRender(); return; }
+    if (isEnter) {
+      if (Date.now() < this.suppressSelectorEnterUntil) { this.tui.requestRender(); return; }
+      this.finish(Array.from(this.checked));
+      return;
+    }
     if (this.mode === "detail") {
       if (ch === "h" || matchesKey(data, Key.left)) { this.mode = "list"; this.searchEditing = false; this.tui.requestRender(); return; }
       if (ch === "l" || matchesKey(data, Key.right)) { this.openSourceDocument(this.selectedSource()); return; }
     }
     if (matchesKey(data, Key.space)) {
       const item = matches[this.selected];
-      if (item) this.checked.has(item.id) ? this.checked.delete(item.id) : this.checked.add(item.id);
-      this.tui.requestRender(); return;
+      if (item) void this.toggleStaged(item);
+      return;
     }
     if (this.mode === "detail") return;
     if (ch === "j" || matchesKey(data, Key.down) || matchesKey(data, Key.tab)) { this.selected = Math.min(Math.max(0, matches.length - 1), this.selected + 1); this.tui.requestRender(); return; }
     if (ch === "k" || matchesKey(data, Key.up) || matchesKey(data, Key.shift("tab"))) { this.selected = Math.max(0, this.selected - 1); this.tui.requestRender(); return; }
-    if (ch === "l" || matchesKey(data, Key.right)) { this.showDetail(this.selectedSource()); return; }
+    if (ch === "l" || matchesKey(data, Key.right)) {
+      const item = matches[this.selected];
+      const source = item ? this.sourceById.get(item.id) : undefined;
+      if (source) this.showDetail(source);
+      else if (item) void this.toggleStaged(item);
+      return;
+    }
     if (matchesKey(data, Key.backspace) || data.includes("\x7f") || data.includes("\x08")) { this.query = this.query.slice(0, -1); this.selected = 0; this.tui.requestRender(); return; }
     if (ch && ch.length === 1 && !/^[jkqlh]$/.test(ch)) { this.query += ch; this.selected = 0; this.tui.requestRender(); return; }
   }
@@ -3995,6 +5191,23 @@ async function cleanupIngestArtifactsForSource(cwd: string, sourceId: string): P
   }
 }
 
+async function materializeIngestSource(cwd: string, abs: string, stored: string): Promise<{ note?: string }> {
+  const root = mechIngestRoot(cwd);
+  const tmpDir = path.join(root, "tmp");
+  const normalizedAbs = path.resolve(abs);
+  const normalizedStored = path.resolve(stored);
+  const inTmp = normalizedAbs === path.resolve(tmpDir) || normalizedAbs.startsWith(`${path.resolve(tmpDir)}${path.sep}`);
+  if (normalizedAbs !== normalizedStored && !inTmp) {
+    try {
+      const relTarget = path.relative(path.dirname(normalizedStored), normalizedAbs) || normalizedAbs;
+      await fs.symlink(relTarget, normalizedStored);
+      return { note: `stored source as symlink to ${normalizedAbs}` };
+    } catch {}
+  }
+  await fs.copyFile(normalizedAbs, normalizedStored).catch(async () => { if (normalizedAbs !== normalizedStored) await fs.writeFile(normalizedStored, await fs.readFile(normalizedAbs)); });
+  return inTmp ? {} : { note: `copied source from ${normalizedAbs} because symlink creation failed` };
+}
+
 async function convertDocumentToText(cwd: string, relOrAbs: string, sourceId: string): Promise<{ text: string; stored?: string; note?: string }> {
   const abs = path.isAbsolute(relOrAbs) ? relOrAbs : path.join(cwd, relOrAbs);
   const root = mechIngestRoot(cwd);
@@ -4004,28 +5217,29 @@ async function convertDocumentToText(cwd: string, relOrAbs: string, sourceId: st
   await fs.mkdir(textDir, { recursive: true });
   const ext = path.extname(abs).toLowerCase();
   const stored = path.join(sourceDir, `${sourceId}-${path.basename(abs)}`);
-  await fs.copyFile(abs, stored).catch(async () => { if (abs !== stored) await fs.writeFile(stored, await fs.readFile(abs)); });
+  const materialized = await materializeIngestSource(cwd, abs, stored);
   const outText = path.join(textDir, `${sourceId}.txt`);
   if (ext === ".pdf") {
     const r = await run("pdftotext", [stored, outText], cwd).catch(e => ({ code: 1, stdout: "", stderr: String(e) }));
     let text = await readText(outText).catch(() => "");
     if (r.code !== 0 || text.trim().length < 80) {
-      return { text, stored: path.relative(cwd, stored), note: "PDF text extraction was weak/failed; OCR is not yet available unless pdftotext can read embedded text." };
+      return { text, stored: path.relative(cwd, stored), note: [materialized.note, "PDF text extraction was weak/failed; OCR is not yet available unless pdftotext can read embedded text."].filter(Boolean).join(" ") };
     }
-    return { text, stored: path.relative(cwd, stored) };
+    return { text, stored: path.relative(cwd, stored), note: materialized.note };
   }
   if (ext === ".docx" && commandExists("pandoc")) {
     const r = await run("pandoc", [stored, "-t", "plain", "-o", outText], cwd).catch(e => ({ code: 1, stdout: "", stderr: String(e) }));
-    return { text: await readText(outText).catch(() => ""), stored: path.relative(cwd, stored), note: r.code === 0 ? undefined : "pandoc failed for docx conversion" };
+    return { text: await readText(outText).catch(() => ""), stored: path.relative(cwd, stored), note: [materialized.note, r.code === 0 ? undefined : "pandoc failed for docx conversion"].filter(Boolean).join(" ") };
   }
   let text = await readText(stored).catch(() => "");
   if (ext === ".html" || ext === ".htm") text = decodeHtml(text.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " "));
   await fs.writeFile(outText, text).catch(() => {});
-  return { text, stored: path.relative(cwd, stored) };
+  return { text, stored: path.relative(cwd, stored), note: materialized.note };
 }
 
 type BibPaperMetadata = { title?: string; venue?: string; year?: string; doi?: string; authors: string[]; source: string; kind?: "journal-article" | "article-like" | "other" };
-type LocalDocumentSearchResult = { path?: string; note?: string; alternatives?: { path: string; score: number }[] };
+type LocalDocumentCandidate = { path: string; score: number };
+type LocalDocumentSearchResult = { path?: string; note?: string; alternatives?: LocalDocumentCandidate[]; candidates?: LocalDocumentCandidate[]; allPaths?: string[]; checked?: number };
 
 function bibPaperMetadata(e: BibEntry): BibPaperMetadata {
   const authors = normalizeSpace(e.fields.author ?? "").split(/\s+and\s+/i).map(a => normalizeSpace(a)).filter(Boolean);
@@ -4183,18 +5397,31 @@ async function localDocumentMatchesMetadata(cwd: string, metadata: BibPaperMetad
   return score >= (metadata.kind === "journal-article" ? 70 : 12);
 }
 
-function explicitBibDocumentCandidates(cwd: string, e: BibEntry): string[] {
+function expandUserPath(p: string): string {
+  if (p === "~") return process.env.HOME ?? p;
+  if (p.startsWith("~/")) return path.join(process.env.HOME ?? "", p.slice(2));
+  return p;
+}
+
+function bibDocumentFieldPathCandidates(cwd: string, raw: string | undefined): string[] {
   const out: string[] = [];
-  for (const field of ["file", "pdf"]) {
-    const raw = e.fields[field];
-    if (!raw) continue;
-    for (const part of raw.split(/[;\n]+/).map(s => s.trim()).filter(Boolean)) {
-      const pieces = part.split(":");
-      const candidate = pieces.length >= 2 && /^[A-Za-z]+$/.test(pieces.at(-1) ?? "") ? pieces.slice(0, -1).join(":") : part.split(":").pop() ?? part;
-      out.push(path.isAbsolute(candidate) ? candidate : path.resolve(cwd, candidate));
-    }
+  if (!raw) return out;
+  for (const part of raw.split(/[;\n]+/).map(s => s.trim().replace(/^\{+|\}+$/g, "")).filter(Boolean)) {
+    const pieces = part.split(":").map(s => s.trim()).filter(Boolean);
+    const extPiece = pieces.find(piece => /\.(pdf|docx|txt|md|markdown|html?|tex)($|[?#])/i.test(piece));
+    const candidate = extPiece ?? (pieces.length >= 2 && /^[A-Za-z]+$/.test(pieces.at(-1) ?? "") ? pieces.slice(0, -1).join(":") : pieces.at(-1) ?? part);
+    const expanded = expandUserPath(candidate.replace(/^file:\/\//i, ""));
+    out.push(path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded));
   }
   return unique(out);
+}
+
+function explicitBibFileFieldCandidates(cwd: string, e: BibEntry): string[] {
+  return bibDocumentFieldPathCandidates(cwd, e.fields.file);
+}
+
+function explicitBibDocumentCandidates(cwd: string, e: BibEntry): string[] {
+  return unique([...bibDocumentFieldPathCandidates(cwd, e.fields.file), ...bibDocumentFieldPathCandidates(cwd, e.fields.pdf)]);
 }
 
 async function findExplicitDocumentForBib(cwd: string, e: BibEntry, metadata: BibPaperMetadata): Promise<string | null> {
@@ -4209,33 +5436,64 @@ function bibFileFieldValue(cwd: string, abs: string): string {
   return rel && !rel.startsWith("..") && !path.isAbsolute(rel) ? rel : abs;
 }
 
-async function findHomeDocumentForBib(cwd: string, e: BibEntry, metadata: BibPaperMetadata): Promise<LocalDocumentSearchResult> {
-  const home = process.env.HOME;
-  if (!home) return { note: "$HOME is not set, so no local fallback search was possible." };
+function preferredIngestSearchRoots(): string[] {
+  const raw = process.env.MECHPI_INGEST_PREFERRED_PATHS ?? process.env.MECHPI_PREFERRED_PATHS;
+  const parts = raw
+    ? raw.split(new RegExp(`[${escapeRegExp(path.delimiter)},\\n]+`)).map(s => s.trim()).filter(Boolean)
+    : ["~/Downloads", "~/Documents/References"];
+  return unique(parts.map(expandUserPath).map(p => path.resolve(p)));
+}
+
+async function findDocumentForBibInRoots(cwd: string, e: BibEntry, metadata: BibPaperMetadata, roots: string[], label: string, limits: { byName: number; broad: number }, onProgress?: (fraction: number, message: string) => void): Promise<LocalDocumentSearchResult> {
+  const existingRoots = [] as string[];
+  for (const root of roots) if (await exists(root)) existingRoots.push(root);
+  if (!existingRoots.length) return { note: `No configured ${label} directories exist.` };
+  onProgress?.(0.02, `preparing ${label} search for ${e.key}`);
   const filenameHints = homeFilenameHints(metadata).filter(t => t.length >= 4).slice(0, 12);
   const hints = unique([...filenameHints, ...bibDocumentHints(e, metadata).filter(t => t.length >= 4).slice(0, 10)]);
-  if (!hints.length) return { note: "No reliable BibTeX/DOI metadata tokens were available for a safe $HOME search." };
+  if (!hints.length) return { note: `No reliable BibTeX/DOI metadata tokens were available for a safe ${label} search.` };
   const pattern = filenameHints.length ? filenameHints.map(escapeRegExp).join("|") : hints.map(escapeRegExp).join("| ").replace(/\| /g, "|");
   const prune = `\\( -path '*/.git/*' -o -path '*/node_modules/*' -o -path '*/.cache/*' -o -path '*/.mechpi/*' \\) -prune -o`;
-  const typedFind = `find ${shellQuote(home)} ${prune} -type f \\( -iname '*.pdf' -o -iname '*.md' -o -iname '*.txt' -o -iname '*.docx' \\) -print 2>/dev/null`;
-  const byNameLimit = Number.parseInt(process.env.MECHPI_HOME_SEARCH_NAME_LIMIT ?? "10000", 10);
-  const broadLimit = Number.parseInt(process.env.MECHPI_HOME_SEARCH_LIMIT ?? "25000", 10);
-  const byName = await run("bash", ["-lc", `${typedFind} | grep -Ei ${shellQuote(pattern)} | head -${Math.max(1, byNameLimit)}`], cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
-  const broad = await run("bash", ["-lc", `${typedFind} | head -${Math.max(1, broadLimit)}`], cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
-  const candidates = unique([...byName.stdout.split(/\r?\n/), ...broad.stdout.split(/\r?\n/)].filter(Boolean));
-  const scored: { path: string; score: number }[] = [];
-  for (const p of candidates) {
+  const rootArgs = existingRoots.map(shellQuote).join(" ");
+  const typedFind = `find ${rootArgs} ${prune} -type f \\( -iname '*.pdf' -o -iname '*.md' -o -iname '*.txt' -o -iname '*.docx' \\) -print 2>/dev/null`;
+  onProgress?.(0.08, `finding filename matches in ${label} for ${e.key}`);
+  const byName = await run("bash", ["-lc", `${typedFind} | grep -Ei ${shellQuote(pattern)} | head -${Math.max(1, limits.byName)}`], cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
+  onProgress?.(0.22, `running bounded ${label} scan for ${e.key}`);
+  const broad = await run("bash", ["-lc", `${typedFind} | head -${Math.max(1, limits.broad)}`], cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
+  const checkedPaths = unique([...byName.stdout.split(/\r?\n/), ...broad.stdout.split(/\r?\n/)].filter(Boolean));
+  onProgress?.(0.40, `scoring ${checkedPaths.length} ${label} candidate file(s) for ${e.key}`);
+  const scored: LocalDocumentCandidate[] = [];
+  for (const [i, p] of checkedPaths.entries()) {
+    if (i === 0 || i % 10 === 0) onProgress?.(0.40 + Math.min(0.55, (i / Math.max(1, checkedPaths.length)) * 0.55), `scoring ${label} candidate ${i + 1}/${checkedPaths.length} for ${e.key}`);
     const score = await scoreDocumentForMetadata(cwd, metadata, p).catch(() => 0);
-    if (score >= (metadata.kind === "journal-article" ? 70 : 12)) scored.push({ path: p, score });
+    if (score > 0) scored.push({ path: p, score });
   }
+  onProgress?.(0.96, `ranking ${label} candidates for ${e.key}`);
   scored.sort((a, b) => b.score - a.score);
-  if (!scored.length) return { note: `No $HOME candidate among ${candidates.length} checked file(s) matched metadata tightly enough (${metadata.title ?? metadata.doi ?? e.key}).` };
-  const best = scored[0];
-  const close = scored.filter(x => x.path !== best.path && best.score < 90 && Math.abs(best.score - x.score) < 1.0).slice(0, 4);
-  if (close.length) {
-    return { note: `Ambiguous $HOME matches; not ingesting without clarification. Best candidates: ${[best, ...close].map(x => `${x.path} (${x.score.toFixed(1)})`).join("; ")}`, alternatives: [best, ...close] };
-  }
-  return { path: best.path, alternatives: scored.slice(0, 5) };
+  const threshold = metadata.kind === "journal-article" ? 70 : 12;
+  const plausible = scored.filter(x => x.score >= threshold);
+  const alternatives = scored.slice(0, 5);
+  if (!plausible.length) return { note: `No ${label} candidate among ${checkedPaths.length} checked file(s) matched metadata tightly enough (${metadata.title ?? metadata.doi ?? e.key}).`, alternatives, candidates: scored, allPaths: checkedPaths, checked: checkedPaths.length };
+  const best = plausible[0];
+  const close = plausible.filter(x => x.path !== best.path && best.score < 90 && Math.abs(best.score - x.score) < 1.0).slice(0, 4);
+  if (close.length) return { note: `Ambiguous ${label} matches; user confirmation required. Best candidates: ${[best, ...close].map(x => `${x.path} (${x.score.toFixed(1)})`).join("; ")}`, alternatives, candidates: scored, allPaths: checkedPaths, checked: checkedPaths.length };
+  return { path: best.path, alternatives, candidates: scored, allPaths: checkedPaths, checked: checkedPaths.length };
+}
+
+async function findPreferredDocumentForBib(cwd: string, e: BibEntry, metadata: BibPaperMetadata, onProgress?: (fraction: number, message: string) => void): Promise<LocalDocumentSearchResult> {
+  return findDocumentForBibInRoots(cwd, e, metadata, preferredIngestSearchRoots(), "preferred paths", {
+    byName: Number.parseInt(process.env.MECHPI_PREFERRED_SEARCH_NAME_LIMIT ?? "5000", 10),
+    broad: Number.parseInt(process.env.MECHPI_PREFERRED_SEARCH_LIMIT ?? "10000", 10),
+  }, onProgress);
+}
+
+async function findHomeDocumentForBib(cwd: string, e: BibEntry, metadata: BibPaperMetadata, onProgress?: (fraction: number, message: string) => void): Promise<LocalDocumentSearchResult> {
+  const home = process.env.HOME;
+  if (!home) return { note: "$HOME is not set, so no local fallback search was possible." };
+  return findDocumentForBibInRoots(cwd, e, metadata, [home], "$HOME", {
+    byName: Number.parseInt(process.env.MECHPI_HOME_SEARCH_NAME_LIMIT ?? "10000", 10),
+    broad: Number.parseInt(process.env.MECHPI_HOME_SEARCH_LIMIT ?? "25000", 10),
+  }, onProgress);
 }
 
 function normalizeVector(v: number[]): number[] {
@@ -4354,6 +5612,343 @@ async function tryDownloadPdf(cwd: string, e: BibEntry, metadata: BibPaperMetada
   return null;
 }
 
+type IngestDocumentChoice = { kind: "candidate"; path: string } | { kind: "manual" } | null;
+
+function displayPathForIngest(cwd: string, abs: string): string {
+  const home = process.env.HOME;
+  if (home && abs.startsWith(`${home}${path.sep}`)) return `~/${path.relative(home, abs)}`;
+  const rel = path.relative(cwd, abs);
+  return rel && !rel.startsWith("..") && !path.isAbsolute(rel) ? rel : abs;
+}
+
+class MechIngestDocumentCandidatePicker implements Focusable {
+  private selected = 0;
+  private _focused = false;
+  constructor(private tui: TUI, private theme: any, private cwd: string, private bib: BibEntry, private metadata: BibPaperMetadata, private candidates: LocalDocumentCandidate[], private done: (choice: IngestDocumentChoice | null) => void) {}
+  get focused() { return this._focused; }
+  set focused(v: boolean) { this._focused = v; }
+  invalidate(): void {}
+  private rowCount(): number { return Math.min(5, this.candidates.length) + 1; }
+  render(width: number): string[] {
+    const shown = this.candidates.slice(0, 5);
+    if (this.selected >= this.rowCount()) this.selected = Math.max(0, this.rowCount() - 1);
+    const lines: string[] = [];
+    lines.push(this.theme.fg("accent", "─".repeat(width)));
+    lines.push(truncateToWidth(this.theme.fg("accent", this.theme.bold(`Confirm source for ${this.bib.key}`)) + this.theme.fg("dim", "  j/k move • l/enter open/inspect • space accept • h back • q cancel"), width));
+    lines.push(truncateToWidth(`title: ${this.metadata.title ?? this.bib.fields.title ?? this.bib.key}`, width));
+    if (this.metadata.authors.length || this.metadata.year) lines.push(truncateToWidth(`metadata: ${[this.metadata.authors.slice(0, 3).join(", "), this.metadata.year, this.metadata.venue].filter(Boolean).join(" • ")}`, width));
+    lines.push(this.theme.fg("accent", "─".repeat(width)));
+    if (!shown.length) lines.push(this.theme.fg("warning", "No ranked candidates were strong enough; provide a file path below."));
+    shown.forEach((c, i) => {
+      const marker = i === this.selected ? "▶" : " ";
+      const line = `${marker} ${i + 1}. ${displayPathForIngest(this.cwd, c.path)}  score ${c.score.toFixed(1)}`;
+      lines.push(truncateToWidth(i === this.selected ? this.theme.bg("selectedBg", this.theme.fg("accent", line)) : line, width));
+    });
+    const manualIndex = shown.length;
+    const manual = `${manualIndex === this.selected ? "▶" : " "} ${shown.length + 1}. None of these — provide a file path`;
+    lines.push(truncateToWidth(manualIndex === this.selected ? this.theme.bg("selectedBg", this.theme.fg("accent", manual)) : manual, width));
+    lines.push(this.theme.fg("accent", "─".repeat(width)));
+    return lines;
+  }
+  private acceptSelected(): void {
+    const shown = this.candidates.slice(0, 5);
+    const candidate = shown[this.selected];
+    this.done(candidate ? { kind: "candidate", path: candidate.path } : { kind: "manual" });
+  }
+  private openSelected(): void {
+    const candidate = this.candidates.slice(0, 5)[this.selected];
+    if (!candidate) { this.done({ kind: "manual" }); return; }
+    const opener = process.env.MECHPI_DOCUMENT_VIEWER ?? process.env.MECHPI_PDF_VIEWER ?? "xdg-open";
+    try { spawn(opener, [candidate.path], { cwd: this.cwd, detached: true, stdio: "ignore" }).unref(); }
+    catch {}
+  }
+  handleInput(data: string): void {
+    const ch = printableKey(data);
+    if (matchesKey(data, Key.escape) || ch === "q" || ch === "h" || matchesKey(data, Key.left)) { this.done(null); return; }
+    if (matchesKey(data, Key.space)) { this.acceptSelected(); return; }
+    if (matchesKey(data, Key.enter) || ch === "l" || matchesKey(data, Key.right)) { this.openSelected(); return; }
+    if (ch === "j" || matchesKey(data, Key.down) || matchesKey(data, Key.tab)) { this.selected = Math.min(this.rowCount() - 1, this.selected + 1); this.tui.requestRender(); return; }
+    if (ch === "k" || matchesKey(data, Key.up) || matchesKey(data, Key.shift("tab"))) { this.selected = Math.max(0, this.selected - 1); this.tui.requestRender(); return; }
+  }
+}
+
+type MechIngestPathInputResult = { kind: "path"; value: string } | { kind: "back" } | null;
+
+function isShiftEscapeInput(data: string): boolean {
+  return parseKey(data) === "shift+escape" || data === "\x1b[27;2;27~" || data === "\x1b[27;2u" || data === "\x1b[1;2u";
+}
+
+class MechIngestPathInputEditor extends MechPiModalTextEditor {
+  constructor(tui: TUI, private themeRef: any, keybindings: any, private title: string, initialText: string, provider: AutocompleteProvider, private done: (value: MechIngestPathInputResult) => void) {
+    super(tui, themeRef, keybindings);
+    this.setText(initialText);
+    this.enterInsert();
+    (this as any).disableSubmit = true;
+    (this as any).setAutocompleteProvider?.(provider);
+  }
+  handleInput(data: string): void {
+    if (isKeyRelease(data)) return;
+    if (isShiftEscapeInput(data)) { this.done({ kind: "back" }); return; }
+    if (matchesKey(data, Key.ctrl("c"))) { this.finish(null); return; }
+    if (matchesKey(data, Key.ctrl("s"))) { this.finish(this.getText()); return; }
+    if (this.handleFishAutocompleteKey(data)) return;
+    this.handleModalInput(data);
+  }
+  render(width: number): string[] {
+    const border = this.themeRef.fg("accent", "─".repeat(width));
+    return [
+      border,
+      truncateToWidth(this.themeRef.fg("accent", this.themeRef.bold(this.title)), width),
+      truncateToWidth(this.themeRef.fg("dim", "Modal path editor: Tab cycles/shows paths • Enter accepts • Shift-Esc back • :q/Ctrl-C cancel."), width),
+      ...this.renderEditorFrame(width),
+    ];
+  }
+  protected handleInsertMode(data: string): void {
+    if (isShiftEscapeInput(data)) { this.done({ kind: "back" }); return; }
+    if (this.handleFishAutocompleteKey(data)) return;
+    if (matchesKey(data, Key.escape)) { this.enterNormal(); return; }
+    if (isPromptBackspaceInput(data)) { this.handleBackspaceInput(); return; }
+    if (matchesKey(data, "shift+enter") || matchesKey(data, "shift+return")) { this.insertTextAtCursor("\n"); return; }
+    if (matchesKey(data, Key.enter)) { this.finish(this.getText()); return; }
+    CustomEditor.prototype.handleInput.call(this, data);
+  }
+  protected handleNormalCommand(data: string, _ch: string | undefined): boolean {
+    if (isShiftEscapeInput(data)) { this.done({ kind: "back" }); return true; }
+    if (matchesKey(data, Key.enter) || matchesKey(data, Key.ctrl("s"))) { this.finish(this.getText()); return true; }
+    return false;
+  }
+  protected fishAutocompleteForce(): boolean { return true; }
+  protected async executeColonCommand(command: string): Promise<void> {
+    if (command === "q" || command === "q!") { this.finish(null); return; }
+    if (command === "w" || command === "wq" || command === "x") { this.finish(this.getText()); return; }
+    await super.executeColonCommand(command);
+  }
+  private finish(value: string | null): void { this.done(value === null ? null : { kind: "path", value: value.trim() }); }
+}
+
+function ingestFilePathAutocompleteProvider(cwd: string, paths: string[]): AutocompleteProvider {
+  const hintedItems = unique(paths).map(abs => ({ value: abs, label: displayPathForIngest(cwd, abs), description: abs }));
+  function prefixAt(lines: string[], cursorLine: number, cursorCol: number): string {
+    // This popup is path-only.  Treat the whole text before the cursor as the
+    // path prefix so /absolute paths are never mistaken for slash commands.
+    return (lines[cursorLine] ?? "").slice(0, cursorCol);
+  }
+  function itemForPath(value: string, isDirectory: boolean, description?: string): AutocompleteItem {
+    const display = displayPathForIngest(cwd, path.isAbsolute(expandUserPath(value)) ? expandUserPath(value) : path.resolve(cwd, expandUserPath(value)));
+    return { value: isDirectory && !value.endsWith("/") ? `${value}/` : value, label: `${path.basename(value.replace(/\/$/, "")) || value}${isDirectory ? "/" : ""}`, description: description ?? display };
+  }
+  function directorySuggestions(prefix: string, force: boolean): AutocompleteItem[] {
+    const raw = prefix || "";
+    const expanded = expandUserPath(raw);
+    let searchDir: string;
+    let searchPrefix = "";
+    let displayDir: string;
+    if (!raw || raw === ".") {
+      searchDir = cwd;
+      displayDir = "";
+      searchPrefix = raw === "." ? "." : "";
+    } else if (raw === "~" || raw === "~/") {
+      searchDir = expandUserPath(raw.endsWith("/") ? raw : `${raw}/`);
+      displayDir = raw.endsWith("/") ? raw : "~/";
+    } else if (raw.endsWith("/")) {
+      searchDir = path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
+      displayDir = raw;
+    } else {
+      searchDir = path.dirname(path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded));
+      searchPrefix = path.basename(expanded);
+      displayDir = raw.includes("/") ? raw.slice(0, raw.lastIndexOf("/") + 1) : "";
+    }
+    let entries: fss.Dirent[];
+    try { entries = fss.readdirSync(searchDir, { withFileTypes: true }); }
+    catch { return []; }
+    return entries
+      .filter(ent => (!ent.name.startsWith(".") || searchPrefix.startsWith(".")) && (!searchPrefix || ent.name.toLowerCase().startsWith(searchPrefix.toLowerCase())))
+      .map(ent => {
+        const full = path.join(searchDir, ent.name);
+        let isDirectory = ent.isDirectory();
+        if (!isDirectory && ent.isSymbolicLink()) { try { isDirectory = fss.statSync(full).isDirectory(); } catch {} }
+        const value = displayDir ? `${displayDir}${ent.name}` : ent.name;
+        const score = !searchPrefix ? (isDirectory ? 2 : 1) : ent.name.toLowerCase().startsWith(searchPrefix.toLowerCase()) ? 100 : fuzzySubsequenceScore(searchPrefix, ent.name);
+        return { item: itemForPath(value, isDirectory, full), score, isDirectory };
+      })
+      .filter(x => x.score > 0)
+      .sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || b.score - a.score || a.item.label.localeCompare(b.item.label))
+      .slice(0, 40)
+      .map(x => x.item);
+  }
+  async function fuzzyPathSuggestions(query: string, signal: AbortSignal): Promise<AutocompleteItem[]> {
+    const q = query.trim();
+    const fd = commandExists("fd") ? "fd" : commandExists("fdfind") ? "fdfind" : null;
+    if (!fd || !q || q.includes("/")) return [];
+    const r = await run(fd, ["--hidden", "--exclude", ".git", "--exclude", "node_modules", "--exclude", ".mechpi", "--max-results", "120", "--color", "never", escapeRegExp(q), "."], cwd, signal).catch(() => null);
+    if (!r || r.code !== 0) return [];
+    return r.stdout.split(/\r?\n/).filter(Boolean).map(rel => {
+      const abs = path.resolve(cwd, rel);
+      let isDirectory = false;
+      try { isDirectory = fss.statSync(abs).isDirectory(); } catch {}
+      return itemForPath(rel, isDirectory, abs);
+    }).slice(0, 40);
+  }
+  function hintedSuggestions(query: string): AutocompleteItem[] {
+    const q = query.trim();
+    if (!hintedItems.length) return [];
+    return hintedItems
+      .map(item => ({ item, score: q ? fuzzySubsequenceScore(q, `${item.label} ${item.value}`) + tokenScore(q, `${item.label} ${item.value}`) * 80 + (item.value.toLowerCase().includes(q.toLowerCase()) ? 100 : 0) : 1 }))
+      .filter(x => !q || x.score > 0)
+      .sort((a, b) => b.score - a.score || a.item.label.localeCompare(b.item.label))
+      .slice(0, 40)
+      .map(x => x.item);
+  }
+  return {
+    async getSuggestions(lines, cursorLine, cursorCol, options) {
+      const prefix = prefixAt(lines, cursorLine, cursorCol);
+      if (!options.force && prefix.length < 1) return null;
+      const merged: AutocompleteItem[] = [];
+      const seen = new Set<string>();
+      for (const item of [...directorySuggestions(prefix, options.force ?? false), ...(await fuzzyPathSuggestions(prefix, options.signal)), ...hintedSuggestions(prefix)]) {
+        if (seen.has(item.value)) continue;
+        seen.add(item.value);
+        merged.push(item);
+      }
+      return merged.length ? { items: merged.slice(0, 80), prefix } : null;
+    },
+    applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+      const next = [...lines];
+      const line = next[cursorLine] ?? "";
+      const start = Math.max(0, cursorCol - prefix.length);
+      next[cursorLine] = line.slice(0, start) + item.value + line.slice(cursorCol);
+      return { lines: next, cursorLine, cursorCol: start + item.value.length };
+    },
+    shouldTriggerFileCompletion() { return true; },
+  };
+}
+
+async function promptForIngestFilePath(ctx: ExtensionContext, bib: BibEntry, metadata: BibPaperMetadata, paths: string[], layer?: MechIngestDrillLayer): Promise<string | null | "back"> {
+  if (!ctx.hasUI) return null;
+  const initial = process.env.HOME ? `${process.env.HOME}/` : "";
+  const result = await mechIngestDrillCustom<MechIngestPathInputResult>(ctx, nextMechIngestDrillLayer(layer), (tui, theme, keybindings, done) => opaquePopup(new MechIngestPathInputEditor(tui, theme, keybindings, `Provide source file for ${bib.key}`, initial, ingestFilePathAutocompleteProvider(ctx.cwd, paths), done), theme), { width: "86%", maxHeight: "70%", anchor: "top-center", row: 3 });
+  if (!result) return null;
+  if (result.kind === "back") return "back";
+  const value = result.value;
+  if (!value) return null;
+  const abs = path.isAbsolute(expandUserPath(value)) ? expandUserPath(value) : path.resolve(ctx.cwd, expandUserPath(value));
+  if (!(await exists(abs))) { ctx.ui.notify(`File not found: ${abs}`, "warning"); return null; }
+  if (!ingestDocumentExtensions().has(path.extname(abs).toLowerCase())) { ctx.ui.notify(`Unsupported ingest file type: ${abs}`, "warning"); return null; }
+  return abs;
+}
+
+async function chooseHomeDocumentForBib(ctx: ExtensionContext, bib: BibEntry, metadata: BibPaperMetadata, search: LocalDocumentSearchResult, layer?: MechIngestDrillLayer): Promise<string | null> {
+  if (!ctx.hasUI) return search.path ?? null;
+  const candidates = (search.alternatives?.length ? search.alternatives : search.candidates ?? []).slice(0, 5);
+  const choice = await mechIngestDrillCustom<IngestDocumentChoice | null>(ctx, nextMechIngestDrillLayer(layer), (tui, theme, _kb, done) => opaquePopup(new MechIngestDocumentCandidatePicker(tui, theme, ctx.cwd, bib, metadata, candidates, done), theme), { width: "86%", maxHeight: "80%" });
+  if (!choice) return null;
+  if (choice.kind === "candidate") return choice.path;
+  const manual = await promptForIngestFilePath(ctx, bib, metadata, unique([...(search.allPaths ?? []), ...(search.candidates ?? []).map(c => c.path), ...(search.alternatives ?? []).map(c => c.path)]), layer);
+  if (manual === "back") return await chooseHomeDocumentForBib(ctx, bib, metadata, search, layer);
+  return manual;
+}
+
+async function confirmReuseBibFileField(ctx: ExtensionContext, bib: BibEntry, metadata: BibPaperMetadata, paths: string[], layer?: MechIngestDrillLayer): Promise<string | "search" | null> {
+  const existing = [] as string[];
+  for (const p of paths) if (await exists(p)) existing.push(p);
+  if (!ctx.hasUI) return existing[0] ?? "search";
+  const preview = existing[0] ?? paths[0];
+  const score = preview ? await scoreDocumentForMetadata(ctx.cwd, metadata, preview).catch(() => 0) : 0;
+  const choice = await mechIngestSelect(ctx, `BibTeX file field for ${bib.key}`, [
+    `Yes — reuse ${preview ? displayPathForIngest(ctx.cwd, preview) : "the BibTeX file field"}${score ? ` (match score ${score.toFixed(1)})` : ""}`,
+    "No — search web/$HOME and choose/enter a different source file",
+  ], layer);
+  if (!choice) return null;
+  if (choice.startsWith("Yes")) {
+    if (!preview || !(await exists(preview))) { ctx.ui.notify(`BibTeX file field target not found: ${preview ?? "(empty)"}; searching instead.`, "warning"); return "search"; }
+    return preview;
+  }
+  return "search";
+}
+
+async function confirmDownloadedWebDocument(ctx: ExtensionContext, bib: BibEntry, converted: MechIngestConvertedDocument, layer?: MechIngestDrillLayer): Promise<boolean> {
+  if (!ctx.hasUI) return true;
+  const source = converted.stored ?? "downloaded DOI/URL PDF";
+  const choice = await mechIngestSelect(ctx, `Confirm downloaded source for ${bib.key}`, [
+    `Yes — use ${source}${converted.note ? ` (${converted.note})` : ""}`,
+    "No — continue to manual/preferred-path search",
+  ], layer);
+  return Boolean(choice?.startsWith("Yes"));
+}
+
+async function offerManualPathBeforeSearch(ctx: ExtensionContext, bib: BibEntry, metadata: BibPaperMetadata, layer?: MechIngestDrillLayer): Promise<string | null | "skip"> {
+  if (!ctx.hasUI) return "skip";
+  while (true) {
+    const choice = await mechIngestSelect(ctx, `Provide source file for ${bib.key}?`, [
+      "Yes — enter a file path now",
+      `No — search preferred paths (${preferredIngestSearchRoots().map(p => displayPathForIngest(ctx.cwd, p)).join(", ")})`,
+    ], layer);
+    if (!choice) return null;
+    if (choice.startsWith("Yes")) {
+      const manual = await promptForIngestFilePath(ctx, bib, metadata, [], layer);
+      if (manual === "back") continue;
+      return manual;
+    }
+    return "skip";
+  }
+}
+
+async function confirmBroadHomeSearch(ctx: ExtensionContext, bib: BibEntry, layer?: MechIngestDrillLayer): Promise<boolean> {
+  if (!ctx.hasUI) return true;
+  const choice = await mechIngestSelect(ctx, `Broader $HOME search for ${bib.key}?`, [
+    "No — stop; I will provide/organize the source later",
+    "Yes — run broad $HOME search (can be slow)",
+  ], layer);
+  return Boolean(choice?.startsWith("Yes"));
+}
+
+async function prepareBibItemForIngestStaging(ctx: ExtensionContext, item: MechIngestItem, setStatus?: (status: string) => void, layer?: MechIngestDrillLayer): Promise<MechIngestPreparedSource | null> {
+  if (!item.bib) return null;
+  const sourceId = hashId(item.id);
+  await cleanupIngestArtifactsForSource(ctx.cwd, sourceId).catch(() => {});
+  const doiMetadata = await fetchDoiMetadata(normalizeDoi(item.bib.fields.doi), ctx.signal).catch(() => null);
+  const metadata = mergePaperMetadata(bibPaperMetadata(item.bib), doiMetadata);
+  const fileFieldPaths = explicitBibFileFieldCandidates(ctx.cwd, item.bib);
+  if (fileFieldPaths.length) {
+    const reuse = await confirmReuseBibFileField(ctx, item.bib, metadata, fileFieldPaths, layer);
+    if (reuse === null) return null;
+    if (reuse !== "search") return { id: item.id, original: reuse, note: "User-confirmed BibTeX file field." };
+  }
+
+  setStatus?.(`Searching web for direct PDF download for ${item.bib.key}...`);
+  const web = await fetchWebDocumentForBib(ctx.cwd, item.bib, metadata, sourceId, false).catch(() => null);
+  if (web) {
+    if (await confirmDownloadedWebDocument(ctx, item.bib, web, layer)) {
+      if (web.stored) await updateExistingBibEntryField(ctx, item.bib.file, item.bib.key, "file", web.stored).catch(() => false);
+      return { id: item.id, original: web.stored, converted: web, note: "User-confirmed direct web download." };
+    }
+    await cleanupIngestArtifactsForSource(ctx.cwd, sourceId).catch(() => {});
+  }
+
+  const manual = await offerManualPathBeforeSearch(ctx, item.bib, metadata, layer);
+  if (manual && manual !== "skip") {
+    await updateExistingBibEntryField(ctx, item.bib.file, item.bib.key, "file", bibFileFieldValue(ctx.cwd, manual)).catch(() => false);
+    return { id: item.id, original: manual, note: "User-provided source file." };
+  }
+  if (manual === null) return null;
+
+  setStatus?.(`${mechIngestProgressBar(0)} Searching preferred paths for ${item.bib.key}...`);
+  const preferredLocal = await findPreferredDocumentForBib(ctx.cwd, item.bib, metadata, (fraction, message) => setStatus?.(`${mechIngestProgressBar(fraction)} ${message}`));
+  let chosen = await chooseHomeDocumentForBib(ctx, item.bib, metadata, preferredLocal, layer);
+  if (chosen) {
+    await updateExistingBibEntryField(ctx, item.bib.file, item.bib.key, "file", bibFileFieldValue(ctx.cwd, chosen)).catch(() => false);
+    return { id: item.id, original: chosen, note: "User-confirmed source file from preferred paths." };
+  }
+
+  if (!(await confirmBroadHomeSearch(ctx, item.bib, layer))) return null;
+  setStatus?.(`${mechIngestProgressBar(0)} Searching broad $HOME for ${item.bib.key}...`);
+  const homeLocal = await findHomeDocumentForBib(ctx.cwd, item.bib, metadata, (fraction, message) => setStatus?.(`${mechIngestProgressBar(fraction)} ${message}`));
+  chosen = await chooseHomeDocumentForBib(ctx, item.bib, metadata, homeLocal, layer);
+  if (!chosen) return null;
+  await updateExistingBibEntryField(ctx, item.bib.file, item.bib.key, "file", bibFileFieldValue(ctx.cwd, chosen)).catch(() => false);
+  return { id: item.id, original: chosen, note: "User-confirmed source file from broad $HOME search." };
+}
+
 async function fetchWebDocumentForBib(cwd: string, e: BibEntry, metadata: BibPaperMetadata, sourceId: string, allowLanding: boolean): Promise<{ text: string; stored?: string; note?: string } | null> {
   const doi = metadata.doi ?? normalizeDoi(e.fields.doi);
   const urls = unique([doi ? `https://doi.org/${encodeURI(doi)}` : undefined, e.fields.url].filter(Boolean) as string[]);
@@ -4379,8 +5974,9 @@ async function fetchWebDocumentForBib(cwd: string, e: BibEntry, metadata: BibPap
   return { text, stored: path.relative(cwd, stored), note: `No verified local copy or downloadable PDF was found; stored DOI/URL landing-page text from the web. Metadata source: ${metadata.source}.` };
 }
 
-async function rebuildMechIngestStore(ctx: ExtensionContext, selectedIds: string[], allItems: MechIngestItem[], onProgress?: MechIngestProgress): Promise<MechIngestManifest> {
+async function rebuildMechIngestStore(ctx: ExtensionContext, selectedIds: string[], allItems: MechIngestItem[], onProgress?: MechIngestProgress, preparedSources: MechIngestPreparedSource[] = []): Promise<MechIngestManifest> {
   const byId = new Map(allItems.map(i => [i.id, i]));
+  const preparedById = new Map(preparedSources.map(p => [p.id, p]));
   const manifest: MechIngestManifest = { selectedIds, sources: [], updatedAt: new Date().toISOString() };
   const chunks: MechIngestChunk[] = [];
   const total = Math.max(1, selectedIds.length);
@@ -4395,38 +5991,30 @@ async function rebuildMechIngestStore(ctx: ExtensionContext, selectedIds: string
       continue;
     }
     const sourceId = hashId(id);
-    await cleanupIngestArtifactsForSource(ctx.cwd, sourceId);
+    const prepared = preparedById.get(id);
+    if (!prepared?.converted) await cleanupIngestArtifactsForSource(ctx.cwd, sourceId);
     try {
       let converted: { text: string; stored?: string; note?: string } | null = null;
-      let original = item.path;
-      if (item.type === "file" && item.path) converted = await convertDocumentToText(ctx.cwd, item.path, sourceId);
-      else if (item.type === "bib" && item.bib) {
+      let original = prepared?.original ?? item.path;
+      if (prepared) {
+        if (prepared.converted) converted = prepared.converted;
+        else if (prepared.original) converted = await convertDocumentToText(ctx.cwd, prepared.original, sourceId);
+        if (converted) converted.note = [converted.note, prepared.note].filter(Boolean).join(" ");
+        if (item.type === "bib" && item.bib && prepared.original) {
+          const originalAbs = path.isAbsolute(prepared.original) ? prepared.original : path.resolve(ctx.cwd, prepared.original);
+          const updated = await updateExistingBibEntryField(ctx, item.bib.file, item.bib.key, "file", bibFileFieldValue(ctx.cwd, originalAbs));
+          converted!.note = [converted!.note, updated ? "Updated BibTeX file field." : "BibTeX file field already current or could not be updated."].filter(Boolean).join(" ");
+        }
+      } else if (item.type === "file" && item.path) {
+        converted = await convertDocumentToText(ctx.cwd, item.path, sourceId);
+      } else if (item.type === "bib" && item.bib && !ctx.hasUI) {
         const doiMetadata = await fetchDoiMetadata(normalizeDoi(item.bib.fields.doi), ctx.signal).catch(() => null);
         const metadata = mergePaperMetadata(bibPaperMetadata(item.bib), doiMetadata);
-        const explicit = await findExplicitDocumentForBib(ctx.cwd, item.bib, metadata);
-        if (explicit) {
-          original = explicit;
-          converted = await convertDocumentToText(ctx.cwd, explicit, sourceId);
-          converted.note = [converted.note, `Used verified explicit BibTeX file/pdf path. Metadata source: ${metadata.source}.`].filter(Boolean).join(" ");
-        } else {
-          onProgress?.(baseProgress + 0.18 / total, `trying DOI/URL download for ${index + 1}/${selectedIds.length}`);
-          converted = await fetchWebDocumentForBib(ctx.cwd, item.bib, metadata, sourceId, false);
-          if (!converted) {
-            onProgress?.(baseProgress + 0.32 / total, `searching $HOME with metadata verification for ${index + 1}/${selectedIds.length}`);
-            const homeLocal = await findHomeDocumentForBib(ctx.cwd, item.bib, metadata);
-            if (homeLocal.path) {
-              original = homeLocal.path;
-              converted = await convertDocumentToText(ctx.cwd, homeLocal.path, sourceId);
-              const updated = await updateExistingBibEntryField(ctx.cwd, item.bib.file, item.bib.key, "file", bibFileFieldValue(ctx.cwd, homeLocal.path));
-              converted.note = [converted.note, `Used $HOME document after title/DOI/venue/year/author metadata verification. ${updated ? "Updated BibTeX file field." : "BibTeX file field already current or could not be updated."} Metadata source: ${metadata.source}.`].filter(Boolean).join(" ");
-            } else {
-              converted = null;
-              manifest.sources.push({ id, label: item.label, type: item.type, original, status: "needs-clarification", note: homeLocal.note ?? `No verified local file or metadata-verified DOI/URL PDF was found for ${metadata.title ?? item.bib.key}; not ingesting because the match is uncertain.` });
-              onProgress?.(0.05 + 0.55 * ((index + 1) / total), `needs clarification for ${index + 1}/${selectedIds.length}`);
-              continue;
-            }
-          }
-        }
+        converted = await fetchWebDocumentForBib(ctx.cwd, item.bib, metadata, sourceId, false);
+      } else if (item.type === "bib") {
+        manifest.sources.push({ id, label: item.label, type: item.type, original, status: "needs-clarification", note: "BibTeX source was not rectified/confirmed in the selector, so it was not ingested." });
+        onProgress?.(0.05 + 0.55 * ((index + 1) / total), `needs clarification for ${index + 1}/${selectedIds.length}`);
+        continue;
       }
       if (!converted || converted.text.trim().length < 80) {
         manifest.sources.push({ id, label: item.label, type: item.type, original, status: "not-found", note: converted?.note ?? "No local document or usable web text found." });
@@ -4489,36 +6077,72 @@ function lexicalIngestRank(store: MechIngestStore, prompt: string): { ch: MechIn
   }).filter(x => x.score > 0).sort((a, b) => b.score - a.score);
 }
 
-async function retrieveMechIngestContext(cwd: string, prompt: string): Promise<string> {
+type MechIngestRetrievalHit = { chunk: MechIngestChunk; score: number };
+type MechIngestRetrievalResult = { method: string; hits: MechIngestRetrievalHit[]; store?: MechIngestStore; error?: string };
+
+type MechIngestRetrievalOptions = { topK?: number; maxCharsPerChunk?: number; signal?: AbortSignal };
+
+function boundedPositiveInteger(value: unknown, fallback: number, max: number): number {
+  const n = typeof value === "number" ? Math.floor(value) : Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(n) && n > 0 ? Math.min(n, max) : fallback;
+}
+
+function ingestAutoRetrievalEnabled(): boolean {
+  return /^(1|true|yes|on)$/i.test(process.env.MECHPI_AUTO_RAG ?? process.env.MECHPI_AUTO_RETRIEVE ?? "");
+}
+
+async function retrieveMechIngestResults(cwd: string, prompt: string, options: MechIngestRetrievalOptions = {}): Promise<MechIngestRetrievalResult> {
   let store: MechIngestStore;
-  try { store = JSON.parse(await readText(mechIngestStorePath(cwd))) as MechIngestStore; } catch { return ""; }
-  if (!store.chunks?.length) return "";
+  try { store = JSON.parse(await readText(mechIngestStorePath(cwd))) as MechIngestStore; } catch { return { method: "none", hits: [], error: "No .mechpi/ingest/vector-store.json found. Run /mechingest first." }; }
+  if (!store.chunks?.length) return { method: "none", hits: [], store, error: "The ingest vector store contains no chunks." };
   let ranked: { ch: MechIngestChunk; score: number }[] = [];
   let method = "lexical fallback";
   if (store.embedding && store.chunks.every(ch => Array.isArray(ch.embedding) && ch.embedding.length === store.embedding?.dimensions)) {
     try {
-      const queryEmbedding = (await embedTexts(cwd, [prompt], undefined, store.embedding)).embeddings[0];
+      const queryEmbedding = (await embedTexts(cwd, [prompt], options.signal, store.embedding)).embeddings[0];
       ranked = store.chunks
         .map(ch => ({ ch, score: cosineSimilarity(queryEmbedding, ch.embedding) }))
         .filter(x => Number.isFinite(x.score))
         .sort((a, b) => b.score - a.score);
       method = `${store.embedding.provider}:${store.embedding.model}`;
-    } catch {
+    } catch (err) {
       ranked = lexicalIngestRank(store, prompt);
+      method = `lexical fallback (${shortProgressLabel(err instanceof Error ? err.message : String(err), 180)})`;
     }
   } else {
     ranked = lexicalIngestRank(store, prompt);
   }
-  ranked = ranked.slice(0, 6);
-  if (!ranked.length) return "";
-  return `Retrieval method: ${method}\n` + ranked.map((x, i) => `[${i + 1}] ${x.ch.label} (score ${x.score.toFixed(3)})\n${x.ch.text}`).join("\n\n");
+  const topK = boundedPositiveInteger(options.topK, 6, 20);
+  return { method, store, hits: ranked.slice(0, topK).map(x => ({ chunk: x.ch, score: x.score })) };
+}
+
+function formatMechIngestRetrieval(result: MechIngestRetrievalResult, options: MechIngestRetrievalOptions = {}): string {
+  if (!result.hits.length) return result.error ?? "No matching ingested chunks found.";
+  const maxChars = boundedPositiveInteger(options.maxCharsPerChunk, 1400, 4000);
+  return `Retrieval method: ${result.method}\n` + result.hits.map((x, i) => {
+    const text = x.chunk.text.length > maxChars ? `${x.chunk.text.slice(0, maxChars)}…` : x.chunk.text;
+    return `[${i + 1}] ${x.chunk.label} (score ${x.score.toFixed(3)})\n${text}`;
+  }).join("\n\n");
+}
+
+async function retrieveMechIngestContext(cwd: string, prompt: string, options: MechIngestRetrievalOptions = {}): Promise<string> {
+  const result = await retrieveMechIngestResults(cwd, prompt, options);
+  return result.hits.length ? formatMechIngestRetrieval(result, options) : "";
 }
 
 async function runMechIngest(args: string, ctx: ExtensionContext): Promise<void> {
-  const items = await discoverMechIngestItems(ctx);
+  const allItems = await discoverMechIngestItems(ctx);
+  const query = args.trim();
+  const items = query ? allItems : allItems.filter(item => item.type === "bib");
   const manifest = await loadIngestManifest(ctx.cwd);
-  const selected = await ctx.ui.custom<string[] | null>((tui, theme, _kb, done) => opaquePopup(new MechIngestPicker(ctx, tui, theme, items, args, manifest, done), theme), { overlay: true, overlayOptions: { width: "90%", maxHeight: "85%", anchor: "center" } });
-  if (selected === null) return ctx.ui.notify("mechingest cancelled", "info");
+  let pickerHandle: OverlayHandle | null = null;
+  const layer: MechIngestDrillLayer = { parentHandle: () => pickerHandle, depth: 0 };
+  const selection = await ctx.ui.custom<MechIngestSelection | null>(
+    (tui, theme, _kb, done) => opaquePopup(new MechIngestPicker(ctx, tui, theme, items, query, manifest, layer, done), theme),
+    { overlay: true, overlayOptions: { width: "90%", maxHeight: "85%", anchor: "center" }, onHandle: (handle: OverlayHandle) => { pickerHandle = handle; } },
+  );
+  if (selection === null) return ctx.ui.notify("mechingest cancelled", "info");
+  const selected = selection.ids;
   const showProgress: MechIngestProgress = (fraction, message) => {
     ctx.ui.setStatus("mechingest", ctx.ui.theme.fg("warning", `${mechIngestProgressBar(fraction)} ${message}`));
   };
@@ -4530,8 +6154,15 @@ async function runMechIngest(args: string, ctx: ExtensionContext): Promise<void>
       showProgress(0.01, `removing ${removed.length} unchecked source(s)`);
       await Promise.all(removed.map(id => cleanupIngestArtifactsForSource(ctx.cwd, hashId(id))));
     }
-    const next = await rebuildMechIngestStore(ctx, selected, items, showProgress);
-    const agentsStatus = await ensureMechIngestAgentsGuidance(ctx.cwd);
+    const prepared = [...selection.prepared];
+    const preparedIds = new Set(prepared.map(p => p.id));
+    for (const source of manifest.sources ?? []) {
+      if (!selectedSet.has(source.id) || preparedIds.has(source.id) || source.status !== "ok") continue;
+      const text = await loadIngestSourceText(ctx.cwd, source);
+      if (text.trim().length >= 80) prepared.push({ id: source.id, original: source.original, converted: { text, stored: source.stored, note: source.note } });
+    }
+    const next = await rebuildMechIngestStore(ctx, selected, allItems, showProgress, prepared);
+    const agentsStatus = await ensureMechIngestAgentsGuidance(ctx);
     const ok = next.sources.filter(s => s.status === "ok").length;
     const missing = next.sources.filter(s => s.status !== "ok");
     const agentsNote = agentsStatus === "unchanged" ? "" : ` AGENTS.md ${agentsStatus} with vector-store retrieval guidance.`;
@@ -4794,6 +6425,106 @@ class VoiceInputController {
   }
 }
 
+
+type MechCompileResult = { ok: boolean; root?: string; bibSummary: BibSyncSummary | null; message: string; level: "info" | "warning" | "error" };
+
+type MechCompileWatcher = { cwd: string; timer: ReturnType<typeof setInterval>; lastHead: string | null; running: boolean };
+let activeMechCompileWatcher: MechCompileWatcher | null = null;
+
+async function performMechCompile(ctx: ExtensionContext, source: "manual" | "watch" = "manual"): Promise<MechCompileResult> {
+  let map = await loadOrBuildMap(ctx);
+  const root = map.rootTex;
+  if (!root) return { ok: false, bibSummary: null, message: "No root TeX file found", level: "error" };
+  let bibSummary: BibSyncSummary | null = null;
+  try {
+    await guardCompileRelevantSources(ctx, map);
+    bibSummary = await syncGlobalBibBeforeCompile(ctx, map);
+    if (bibSummary) {
+      map = await buildPaperMap(ctx.cwd, root);
+      await writeMap(ctx.cwd, map).catch(() => {});
+    }
+  } catch (err) {
+    return { ok: false, root, bibSummary, message: err instanceof Error ? err.message : String(err), level: "error" };
+  }
+  const r = await runLatexmk(ctx.cwd, root);
+  if (r.ok) {
+    const nextMap = await buildPaperMap(ctx.cwd);
+    await writeMap(ctx.cwd, nextMap);
+    await reportPostCompileUntrackedRelevant(ctx, nextMap);
+  }
+  const bibNote = bibSummary ? `\n${formatBibSyncSummary(bibSummary)}` : "";
+  const prefix = source === "watch" ? "Auto-compile" : "Compile";
+  const message = r.ok ? `${prefix} OK: ${root}; equation numbers refreshed${bibNote}` : `${prefix} failed: ${root}; repair LaTeX errors before number lookup${bibNote}`;
+  return { ok: r.ok, root, bibSummary, message, level: r.ok ? (bibSummary?.warnings.length ? "warning" : "info") : "error" };
+}
+
+async function currentGitHead(cwd: string): Promise<string | null> {
+  const r = await run("git", ["rev-parse", "HEAD"], cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
+  return r.code === 0 ? r.stdout.trim() : null;
+}
+
+function changedPathCouldAffectCompile(rel: string): boolean {
+  const abs = path.resolve(rel);
+  if (isGeneratedLatexArtifact(abs) || rel.split(/[\\/]/).includes(".mechpi")) return false;
+  return compileRelevantExtension(abs);
+}
+
+async function committedCompileRelevantChanges(cwd: string, oldHead: string | null, newHead: string): Promise<string[]> {
+  const range = oldHead ? `${oldHead}..${newHead}` : `${newHead}^..${newHead}`;
+  let r = await run("git", ["diff", "--name-only", range], cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
+  if (r.code !== 0) r = await run("git", ["diff-tree", "--no-commit-id", "--name-only", "-r", newHead], cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
+  if (r.code !== 0) return [];
+  return unique(r.stdout.split(/\r?\n/).map(s => s.trim()).filter(Boolean).filter(changedPathCouldAffectCompile));
+}
+
+function stopMechCompileWatcher(ctx?: ExtensionContext): void {
+  if (!activeMechCompileWatcher) return;
+  clearInterval(activeMechCompileWatcher.timer);
+  activeMechCompileWatcher = null;
+  ctx?.ui.notify("mechcompile watcher stopped", "info");
+}
+
+async function startMechCompileWatcher(ctx: ExtensionContext): Promise<void> {
+  stopMechCompileWatcher();
+  const lastHead = await currentGitHead(ctx.cwd);
+  const watcher: MechCompileWatcher = { cwd: ctx.cwd, lastHead, running: false, timer: undefined as any };
+  watcher.timer = setInterval(() => {
+    void (async () => {
+      if (watcher.running) return;
+      const head = await currentGitHead(ctx.cwd);
+      if (!head || head === watcher.lastHead) return;
+      const previous = watcher.lastHead;
+      watcher.lastHead = head;
+      const changed = await committedCompileRelevantChanges(ctx.cwd, previous, head);
+      if (!changed.length) return;
+      watcher.running = true;
+      ctx.ui.setStatus("mechcompile-watch", ctx.ui.theme.fg("warning", "commit detected; compiling"));
+      try {
+        const result = await performMechCompile(ctx, "watch");
+        ctx.ui.notify(`${result.message}\nTriggered by commit ${head.slice(0, 8)}: ${changed.slice(0, 8).join(", ")}${changed.length > 8 ? "…" : ""}`, result.level);
+      } finally {
+        watcher.running = false;
+        ctx.ui.setStatus("mechcompile-watch", ctx.ui.theme.fg("success", "watching commits"));
+      }
+    })().catch(err => ctx.ui.notify(err instanceof Error ? err.message : String(err), "error"));
+  }, Number.parseInt(process.env.MECHPI_COMPILE_WATCH_INTERVAL_MS ?? "3000", 10) || 3000);
+  activeMechCompileWatcher = watcher;
+  ctx.ui.setStatus("mechcompile-watch", ctx.ui.theme.fg("success", "watching commits"));
+  ctx.ui.notify(`mechcompile watcher started${lastHead ? ` at ${lastHead.slice(0, 8)}` : " (git HEAD unavailable yet)"}`, "info");
+}
+
+async function runMechCompileCommand(args: string, ctx: ExtensionContext): Promise<void> {
+  const mode = (args.trim().toLowerCase() || "once") as "once" | "on" | "off";
+  if (!(["once", "on", "off"] as string[]).includes(mode)) {
+    ctx.ui.notify("Usage: /mechcompile [once|on|off]", "warning");
+    return;
+  }
+  if (mode === "off") { stopMechCompileWatcher(ctx); return; }
+  if (mode === "on") { await startMechCompileWatcher(ctx); return; }
+  const result = await performMechCompile(ctx, "manual");
+  ctx.ui.notify(result.message, result.level);
+}
+
 let activePromptEditor: MechPiModalPromptEditor | null = null;
 let activeVoice: VoiceInputController | null = null;
 
@@ -4834,10 +6565,25 @@ export default function mechPi(pi: ExtensionAPI) {
       equationCache = { at: Date.now(), equations };
       return equations;
     };
+    let mechEditCache: { at: number; query: string; targets: EditTarget[] } | null = null;
+    const getMechEditTargets = async (query: string) => {
+      if (mechEditCache && mechEditCache.query === query && Date.now() - mechEditCache.at < 3000) return mechEditCache.targets;
+      const targets = await findMechEditTargets(ctx, query).catch(() => []);
+      mechEditCache = { at: Date.now(), query, targets };
+      return targets;
+    };
     ctx.ui.addAutocompleteProvider((current: AutocompleteProvider) => ({
       async getSuggestions(lines, cursorLine, cursorCol, options) {
         const line = lines[cursorLine] ?? "";
         const before = line.slice(0, cursorCol);
+        const editMatch = before.match(/^\/mechedit(?:\s+(.*))?$/);
+        if (editMatch) {
+          const parsed = parseMechEditArgs(editMatch[1] ?? "");
+          if (!parsed.query.trim()) return current.getSuggestions(lines, cursorLine, cursorCol, options);
+          const items = mechEditAutocompleteItems(await getMechEditTargets(parsed.query));
+          if (options.signal.aborted || items.length === 0) return null;
+          return { items, prefix: before };
+        }
         const gotoMatch = before.match(/^\/mechgotocite(?:\s+(.*))?$/);
         if (gotoMatch) {
           const query = gotoMatch[1] ?? "";
@@ -4863,12 +6609,49 @@ export default function mechPi(pi: ExtensionAPI) {
         const ingestMatch = before.match(/^\/mechingest(?:\s+(.*))?$/);
         if (ingestMatch) {
           const query = ingestMatch[1] ?? "";
+          if (!query.trim()) return null;
           const items = mechIngestAutocompleteItems(await getMechIngestItems(), query);
           return items.length ? { items, prefix: before } : null;
+        }
+        if (before.startsWith("/") && !before.includes(" ")) {
+          const query = before.slice(1);
+          const dynamic = pi.getCommands().map((cmd: { name: string; source: string; description?: string }) => ({ value: `/${cmd.name}`, label: `/${cmd.name}`, description: `[${cmd.source}] ${cmd.description ?? ""}` }));
+          const builtin = [
+            ["settings", "Open settings menu"], ["model", "Select model"], ["scoped-models", "Enable/disable models"], ["export", "Export session"], ["import", "Import session"], ["share", "Share session"], ["copy", "Copy last agent message"], ["name", "Set session display name"], ["session", "Show session info"], ["changelog", "Show changelog"], ["hotkeys", "Show shortcuts"], ["fork", "Create a fork"], ["clone", "Duplicate session"], ["tree", "Navigate session tree"], ["login", "Configure auth"], ["logout", "Remove auth"], ["new", "Start new session"], ["compact", "Compact session"], ["resume", "Resume session"], ["reload", "Reload resources"], ["quit", "Quit pi"],
+          ].map(([name, description]) => ({ value: `/${name}`, label: `/${name}`, description: `[builtin] ${description}` }));
+          const seen = new Set<string>();
+          const commands = [...dynamic, ...builtin].filter(item => {
+            if (seen.has(item.value)) return false;
+            seen.add(item.value);
+            return true;
+          });
+          const matches = commands
+            .map(item => ({ item, score: query ? fuzzySubsequenceScore(query, item.value) + (item.value.slice(1).startsWith(query) ? 200 : 0) : 1 }))
+            .filter(x => !query || x.score > 0)
+            .sort((a, b) => b.score - a.score || a.item.value.localeCompare(b.item.value))
+            .slice(0, 40)
+            .map(x => x.item);
+          return matches.length ? { items: matches, prefix: before } : null;
         }
         return current.getSuggestions(lines, cursorLine, cursorCol, options);
       },
       applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+        if (prefix.startsWith("/")) {
+          const next = [...lines];
+          const line = next[cursorLine] ?? "";
+          const start = Math.max(0, cursorCol - prefix.length);
+          next[cursorLine] = line.slice(0, start) + item.value + line.slice(cursorCol);
+          const addSpace = !item.value.includes(" ") && !line.slice(cursorCol).startsWith(" ");
+          if (addSpace) next[cursorLine] = next[cursorLine]!.slice(0, start + item.value.length) + " " + next[cursorLine]!.slice(start + item.value.length);
+          return { lines: next, cursorLine, cursorCol: start + item.value.length + (addSpace ? 1 : 0) };
+        }
+        if (isMechFuzzyCompletionPromptText(prefix)) {
+          const next = [...lines];
+          const line = next[cursorLine] ?? "";
+          const start = Math.max(0, cursorCol - prefix.length);
+          next[cursorLine] = line.slice(0, start) + item.value + line.slice(cursorCol);
+          return { lines: next, cursorLine, cursorCol: start + item.value.length };
+        }
         return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
       },
       shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
@@ -4879,7 +6662,7 @@ export default function mechPi(pi: ExtensionAPI) {
       if (activePromptEditor?.tryHandlePromptBackspaceInput(data)) return { consume: true };
       return activePromptEditor?.tryHandleTmuxPrefixInput(data) ? { consume: true } : undefined;
     });
-    if (await exists(path.join(ctx.cwd, "main.tex")) || (await walk(ctx.cwd).catch(() => [])).some(p => p.endsWith(".tex"))) {
+    if (await hasTexFileShallow(ctx.cwd)) {
       ctx.ui.setStatus("mech-pi", "mech-pi ready");
     }
   });
@@ -4900,12 +6683,12 @@ export default function mechPi(pi: ExtensionAPI) {
     if (await exists(cache)) {
       try { mapNote = summarizeMap(JSON.parse(await readText(cache)) as PaperMap); } catch {}
     }
-    const ingestContext = await retrieveMechIngestContext(ctx.cwd, event.prompt ?? "");
+    const ingestContext = ingestAutoRetrievalEnabled() ? await retrieveMechIngestContext(ctx.cwd, event.prompt ?? "") : "";
     const ingestNote = ingestContext ? `\n\nMECH-PI INGESTED REFERENCE CONTEXT (from .mechpi/ingest vector store; cite/check sources before relying on it):\n${ingestContext}` : "";
-    return { systemPrompt: ctx.getSystemPrompt() + `\n\nMECH-PI RESEARCH MODE:\n- The LaTeX repository is the source of truth. If chat memory conflicts with TeX files, reload/ingest files and trust TeX.\n- For mechanics/theory claims, prefer focused source citations: file:line and equation labels.\n- Nudge toward truthful mechanics: distinguish assumptions, definitions, derivations, constitutive restrictions, and conjectures.\n- Use mech_ingest, mech_focus_equation, mech_search_symbol, mech_check, and mech_compile when relevant.\n- Keep small definitions and identifiers inline in prose, e.g. p is pressure or c_t is total compressibility; do not force-render single symbols or short definitions.
+    return { systemPrompt: ctx.getSystemPrompt() + `\n\nMECH-PI RESEARCH MODE:\n- The LaTeX repository is the source of truth. If chat memory conflicts with TeX files, reload/ingest files and trust TeX.\n- For mechanics/theory claims, prefer focused source citations: file:line and equation labels.\n- Nudge toward truthful mechanics: distinguish assumptions, definitions, derivations, constitutive restrictions, and conjectures.\n- Use mech_ingest, mech_focus_equation, mech_search_symbol, mech_check, and mech_compile when relevant.\n- Use mech_retrieve for on-demand retrieval from .mechpi/ingest/vector-store.json when a question needs ingested reference/background context; do not read or send the whole vector store.\n- Keep small definitions and identifiers inline in prose, e.g. p is pressure or c_t is total compressibility; do not force-render single symbols or short definitions.
 - Put actual equations, derivations, fractions, derivatives, integrals/sums, matrices/cases, and relation-heavy expressions in display math (\\[...\\] or equation/align environments) so mech-pi uses the full equation renderer.
 - Use raw LaTeX code blocks only when the user explicitly asks for raw source/code.
-- If MECH-PI INGESTED REFERENCE CONTEXT is present, use it as the first-pass RAG result. Answer from it when sufficient; do not run broad filesystem searches just to duplicate retrieval. If more retrieval is needed, inspect .mechpi/ingest/manifest.json, .mechpi/ingest/vector-store.json, or .mechpi/ingest/text before wider searches.\nCurrent paper cache summary:\n${mapNote}${ingestNote}` };
+- If MECH-PI INGESTED REFERENCE CONTEXT is present, use it as the first-pass RAG result. Otherwise call mech_retrieve before broad filesystem searches for ingested references/background papers.\nCurrent paper cache summary:\n${mapNote}${ingestNote}` };
   });
 
   pi.registerTool({
@@ -4992,6 +6775,34 @@ export default function mechPi(pi: ExtensionAPI) {
   });
 
   pi.registerTool({
+    name: "mech_retrieve", label: "Mech Retrieve", description: "Retrieve top relevant chunks from the local .mechpi/ingest vector store without sending the whole store to the model.", promptSnippet: "Query .mechpi/ingest/vector-store.json and return only the most relevant ingested reference chunks.", promptGuidelines: ["Use mech_retrieve when the user asks about ingested references, background papers, remembered phrases, or literature context before broad filesystem searches."], parameters: IngestRetrieveParams,
+    async execute(_id, params, signal, _onUpdate, ctx) {
+      const options = { topK: params.topK, maxCharsPerChunk: params.maxCharsPerChunk, signal };
+      const result = await retrieveMechIngestResults(ctx.cwd, params.query, options);
+      const text = formatMechIngestRetrieval(result, options);
+      return {
+        content: [{ type: "text", text }],
+        details: {
+          query: params.query,
+          method: result.method,
+          count: result.hits.length,
+          error: result.error,
+          hits: result.hits.map(hit => ({
+            id: hit.chunk.id,
+            sourceId: hit.chunk.sourceId,
+            label: hit.chunk.label,
+            score: hit.score,
+            textLength: hit.chunk.text.length,
+          })),
+          embedding: result.store?.embedding,
+          retrievalNote: result.store?.retrievalNote,
+        },
+      };
+    },
+    renderCall(args, theme) { return new Text(theme.fg("toolTitle", theme.bold("mech_retrieve ")) + theme.fg("muted", String(args.query ?? "")), 0, 0); }
+  });
+
+  pi.registerTool({
     name: "mech_check", label: "Mechanics Check", description: "Run lightweight LaTeX/mechanics checks: refs, citations, duplicate labels, TODOs, and simple index red flags.", parameters: CheckParams,
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const map = await buildPaperMap(ctx.cwd);
@@ -5028,15 +6839,21 @@ export default function mechPi(pi: ExtensionAPI) {
 
   pi.registerCommand("mechmap", { description: "Ingest current LaTeX repo and show paper map summary", handler: async (args, ctx) => { const map = await buildPaperMap(ctx.cwd, args.trim() || undefined); await writeMap(ctx.cwd, map); ctx.ui.notify(summarizeMap(map), map.warnings.length ? "warning" : "info"); } });
   pi.registerCommand("mechedit", {
-    description: "Find a manuscript location from a natural-language query and open it in an external editor. Usage: /mechedit entropy inequality",
+    description: "Find a manuscript location from a natural-language query and open it in an editor. Usage: /mechedit [--inline|--external] entropy inequality",
     handler: async (args, ctx) => {
-      const query = args.trim();
-      if (!query) return ctx.ui.notify("Usage: /mechedit text describing the manuscript location, eq:label, or file.tex:line", "warning");
-      const target = await findMechEditTarget(ctx, query);
-      if (!target) return ctx.ui.notify("No manuscript location found. Run /mechmap if the cache is stale.", "warning");
+      const { query, inline } = parseMechEditArgs(args.trim());
+      if (!query) return ctx.ui.notify("Usage: /mechedit [--inline|--external] text describing the manuscript location, eq:label, or file.tex:line", "warning");
+      const target = await chooseMechEditTarget(ctx, query);
+      if (!target) return ctx.ui.notify("No manuscript location selected.", "warning");
       try {
-        const opened = openExternalEditorAt(ctx.cwd, target);
-        ctx.ui.notify(`Opening ${target.file}:${target.line} (${target.title}, score ${target.score.toFixed(1)}) with ${opened.command}.`, "info");
+        if (inline) {
+          const where = await openSourceFilePopupEditor(ctx, target);
+          ctx.ui.notify(where ? `Closed inline editor for ${where}.` : "Inline edit cancelled", "info");
+        } else {
+          const opened = openExternalEditorAt(ctx.cwd, target);
+          const where = target.wholeFile ? target.file : `${target.file}:${target.line}`;
+          ctx.ui.notify(`Opening ${where} (${target.title}, score ${target.score.toFixed(1)}) with ${opened.command}.`, "info");
+        }
       } catch (err) {
         ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
       }
@@ -5126,7 +6943,11 @@ export default function mechPi(pi: ExtensionAPI) {
       catch (err) { voice.notifyError(err); }
     }
   });
-  pi.registerCommand("mechcompile", { description: "Run latexmk on the detected paper root and refresh equation numbers", handler: async (_args, ctx) => { const map = await loadOrBuildMap(ctx); const root = map.rootTex; if (!root) return ctx.ui.notify("No root TeX file found", "error"); const r = await runLatexmk(ctx.cwd, root); if (r.ok) await writeMap(ctx.cwd, await buildPaperMap(ctx.cwd)); ctx.ui.notify(r.ok ? `Compile OK: ${root}; equation numbers refreshed` : `Compile failed: ${root}; repair LaTeX errors before number lookup`, r.ok ? "info" : "error"); } });
+  pi.registerCommand("mechcompile", {
+    description: "Compile once or watch git commits. Usage: /mechcompile [once|on|off] (default once)",
+    handler: async (args, ctx) => { await runMechCompileCommand(args, ctx); }
+  });
   pi.registerCommand("mechpreview", { description: "Open compiled PDF using MECHPI_PDF_VIEWER or xdg-open", handler: async (_args, ctx) => { const map = await loadOrBuildMap(ctx); const pdf = map.rootTex ? map.rootTex.replace(/\.tex$/, ".pdf") : "main.pdf"; spawn(process.env.MECHPI_PDF_VIEWER ?? "xdg-open", [path.resolve(ctx.cwd, pdf)], { detached: true, stdio: "ignore" }).unref(); ctx.ui.notify(`Opening ${pdf}`, "info"); } });
   pi.registerCommand("mechquestions", { description: "Ask the agent to interrogate the current mechanics development", handler: async (args, _ctx) => { pi.sendUserMessage(`Use the mechanics research companion mode. Ingest/focus on the TeX source as needed, then ask me pointed development questions about ${args || "the current paper"}. Prioritize assumptions, balance laws, thermodynamics, constitutive choices, notation conflicts, and missing derivation steps.`); } });
+  pi.on("session_shutdown", () => { stopMechCompileWatcher(); });
 }
