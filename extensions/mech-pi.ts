@@ -1703,9 +1703,13 @@ function splitCtrlAPrefix(data: string): string | null {
   return data.startsWith("\x01") ? data.slice(1) : null;
 }
 
-function prefixKeyChar(data: string): string | undefined {
-  if (data === "\x1d" || matchesKey(data, "ctrl+]")) return "]";
-  if (data === "\x1b" || matchesKey(data, Key.escape)) return "[";
+function prefixKeyChar(data: string): CtrlAPrefixCommand | string | undefined {
+  const key = parseKey(data);
+  if (key === "ctrl+]" || data === "\x1d") return "]";
+  if (key === "escape" || key === "ctrl+[" || data === "\x1b") return "[";
+  const ctrlMatch = key?.match(/^ctrl\+([a-z0-9])$/);
+  if (ctrlMatch) return ctrlMatch[1];
+  if (key && key.length === 1) return key;
   return printableKey(data) ?? data[0];
 }
 
