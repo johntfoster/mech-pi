@@ -78,6 +78,7 @@ See [docs/terminal-images.md](docs/terminal-images.md) for SSH, Kitty, and tmux 
 /mechaddcite prompt      find/select citation(s), summarize PDFs, update .bib, optionally insert into TeX
 /mechciteedit query      edit a local BibTeX entry with a rendered reference preview
 /mechgotocite query      fuzzy search local .bib entries and open the best paper website
+/mechrag status|on|off   toggle retrieval from the local ingest store for this session/panes
 /mechingest keywords     select refs/files, extract text, and build a local retrieval store
 /mechcompile             run latexmk on the detected root and refresh aux equation numbers
 /mechvoice status        configure/use local speech-to-text prompt input
