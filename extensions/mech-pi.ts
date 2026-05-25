@@ -7347,6 +7347,7 @@ export default function mechPi(pi: ExtensionAPI) {
       try { mapNote = summarizeMap(JSON.parse(await readText(cache)) as PaperMap); } catch {}
     }
     const ragDisabled = mechRagDisabled(ctx, Boolean(pi.getFlag("no-mech-rag")));
+    if (ragDisabled) disableMechRetrieveTool(pi);
     const ingestContext = !ragDisabled && ingestAutoRetrievalEnabled() ? await retrieveMechIngestContext(ctx.cwd, event.prompt ?? "") : "";
     const ingestNote = ingestContext ? `\n\nMECH-PI INGESTED REFERENCE CONTEXT (from .mechpi/ingest vector store; cite/check sources before relying on it):\n${ingestContext}` : "";
     const ragGuidance = ragDisabled
