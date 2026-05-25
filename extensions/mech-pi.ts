@@ -79,7 +79,12 @@ let mechPaneActiveIndex = -1;
 function rememberMechPaneSession(sessionFile?: string | null): void {
   if (!sessionFile) return;
   const normalized = path.resolve(sessionFile);
-  mechPaneSessions = mechPaneSessions.filter(file => file !== normalized && fss.existsSync(file));
+  mechPaneSessions = mechPaneSessions.filter(file => fss.existsSync(file));
+  const existingIndex = mechPaneSessions.indexOf(normalized);
+  if (existingIndex >= 0) {
+    mechPaneActiveIndex = existingIndex;
+    return;
+  }
   mechPaneSessions.push(normalized);
   mechPaneActiveIndex = mechPaneSessions.length - 1;
 }
@@ -100,6 +105,14 @@ function nextMechPaneSession(currentFile: string | undefined | null, delta: 1 | 
   const nextIndex = (currentIndex + delta + sessions.length) % sessions.length;
   mechPaneActiveIndex = nextIndex;
   return sessions[nextIndex] ?? null;
+}
+
+function numberedMechPaneSession(currentFile: string | undefined | null, paneNumber: number): string | null {
+  rememberMechPaneSession(currentFile);
+  const sessions = availableMechPaneSessions();
+  if (!Number.isInteger(paneNumber) || paneNumber < 1 || paneNumber > sessions.length) return null;
+  mechPaneActiveIndex = paneNumber - 1;
+  return sessions[mechPaneActiveIndex] ?? null;
 }
 
 function mechPaneLabel(): string {
@@ -1683,7 +1696,7 @@ function readTextFromSystemClipboard(): string | null {
 
 const CTRL_A_PREFIX_TIMEOUT_MS = 2000;
 
-type CtrlAPrefixCommand = "]" | "[" | "c" | "n" | "p";
+type CtrlAPrefixCommand = "]" | "[" | "c" | "n" | "p" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9";
 
 function splitCtrlAPrefix(data: string): string | null {
   if (data === "\x01" || matchesKey(data, Key.ctrl("a"))) return "";
