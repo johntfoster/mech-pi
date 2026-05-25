@@ -1646,6 +1646,10 @@ function readTextFromSystemClipboard(): string | null {
   return null;
 }
 
+const CTRL_A_PREFIX_TIMEOUT_MS = 2000;
+
+type CtrlAPrefixCommand = "]" | "[" | "c" | "n" | "p";
+
 function splitCtrlAPrefix(data: string): string | null {
   if (data === "\x01" || matchesKey(data, Key.ctrl("a"))) return "";
   return data.startsWith("\x01") ? data.slice(1) : null;
