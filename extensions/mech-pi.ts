@@ -6948,8 +6948,10 @@ class VoiceInputController {
   private async finishRecording(audio: string): Promise<void> {
     this.ctx.ui.setStatus("voice", this.ctx.ui.theme.fg("warning", "● voice transcribing"));
     const text = (await this.transcribe(audio)).trim();
-    if (text) activePromptEditor?.insertVoiceText(text);
-    else this.ctx.ui.notify("Speech transcription returned no text.", "warning");
+    if (text) {
+      activePromptEditor?.insertVoiceText(text, false);
+      if (activePromptEditor?.hasVoiceGeneratedPrompt()) void activePromptEditor.rewriteVoicePrompt(this.ctx, /^(1|true|yes|on)$/i.test(mechEnv("MECHPI_VOICE_AUTOSUBMIT") ?? ""));
+    } else this.ctx.ui.notify("Speech transcription returned no text.", "warning");
     this.ctx.ui.setStatus("voice", undefined);
     if (!/^(1|true|yes|on)$/i.test(mechEnv("MECHPI_KEEP_VOICE_AUDIO") ?? "")) {
       fs.rm(path.dirname(audio), { recursive: true, force: true }).catch(() => {});
