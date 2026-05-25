@@ -7344,21 +7344,23 @@ let activeVoice: VoiceInputController | null = null;
 async function handleMechPaneCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
   const cmd = args.trim().toLowerCase() || "status";
   const current = ctx.sessionManager.getSessionFile();
-  rememberMechPaneSession(current);
+  rememberMechPaneSession(ctx.cwd, current);
   if (cmd === "status" || cmd === "list") {
-    const sessions = availableMechPaneSessions();
-    ctx.ui.notify(`mech-pi panes: ${mechPaneLabel()}${sessions.length ? `\n${sessions.map((file, i) => `${i === mechPaneActiveIndex ? "*" : " "} ${i + 1}. ${file}`).join("\n")}` : ""}`, "info");
+    const sessions = availableMechPaneSessions(ctx.cwd);
+    const activeIndex = mechPaneActiveIndex(ctx.cwd);
+    const ragDefault = mechPaneDefaultRagEnabled(ctx.cwd) ? "on" : "off";
+    ctx.ui.notify(`mech-pi panes: ${mechPaneLabel(ctx.cwd)} (new-pane /mechingest default: ${ragDefault})${sessions.length ? `\n${sessions.map((file, i) => `${i === activeIndex ? "*" : " "} ${i + 1}. ${file}`).join("\n")}` : ""}`, "info");
     return;
   }
   const paneNumber = /^\d+$/.test(cmd) ? Number.parseInt(cmd, 10) : NaN;
   if (Number.isInteger(paneNumber)) {
-    const target = numberedMechPaneSession(current, paneNumber);
+    const target = numberedMechPaneSession(ctx.cwd, current, paneNumber);
     if (!target) { ctx.ui.notify(`No mech-pi pane ${paneNumber}. Use Ctrl-a c to create panes.`, "warning"); return; }
-    if (current && path.resolve(current) === path.resolve(target)) { ctx.ui.notify(`Already at ${mechPaneLabel()}`, "info"); return; }
+    if (current && path.resolve(current) === path.resolve(target)) { ctx.ui.notify(`Already at ${mechPaneLabel(ctx.cwd)}`, "info"); return; }
     const result = await ctx.switchSession(target, {
       withSession: async (nextCtx) => {
-        rememberMechPaneSession(nextCtx.sessionManager.getSessionFile());
-        nextCtx.ui.notify(`Switched to ${mechPaneLabel()}`, "info");
+        rememberMechPaneSession(nextCtx.cwd, nextCtx.sessionManager.getSessionFile());
+        nextCtx.ui.notify(`Switched to ${mechPaneLabel(nextCtx.cwd)}`, "info");
       },
     });
     if (result.cancelled) ctx.ui.notify("Pane switch cancelled", "info");
@@ -7366,23 +7368,25 @@ async function handleMechPaneCommand(args: string, ctx: ExtensionCommandContext)
   }
   if (cmd === "new" || cmd === "c" || cmd === "create") {
     const parentSession = current ?? undefined;
+    const defaultRag = mechPaneDefaultRagEnabled(ctx.cwd);
     const result = await ctx.newSession({
       parentSession,
+      setup: async (sm) => { appendMechRagMode(sm, defaultRag, defaultRag ? "/mechingest on (pane default)" : "/mechingest off (pane default)"); },
       withSession: async (nextCtx) => {
-        rememberMechPaneSession(nextCtx.sessionManager.getSessionFile());
-        nextCtx.ui.notify(`Created ${mechPaneLabel()} (Ctrl-a n/p switches panes; Ctrl-a 1..9 jumps directly)`, "info");
+        rememberMechPaneSession(nextCtx.cwd, nextCtx.sessionManager.getSessionFile());
+        nextCtx.ui.notify(`Created ${mechPaneLabel(nextCtx.cwd)} with /mechingest ${defaultRag ? "on" : "off"} (Ctrl-a n/p switches panes; Ctrl-a 1..9 jumps directly)`, "info");
       },
     });
     if (result.cancelled) ctx.ui.notify("New pane cancelled", "info");
     return;
   }
   if (cmd === "next" || cmd === "n" || cmd === "prev" || cmd === "previous" || cmd === "p") {
-    const target = nextMechPaneSession(current, cmd === "prev" || cmd === "previous" || cmd === "p" ? -1 : 1);
+    const target = nextMechPaneSession(ctx.cwd, current, cmd === "prev" || cmd === "previous" || cmd === "p" ? -1 : 1);
     if (!target) { ctx.ui.notify("No other mech-pi pane yet. Use Ctrl-a c to create one.", "info"); return; }
     const result = await ctx.switchSession(target, {
       withSession: async (nextCtx) => {
-        rememberMechPaneSession(nextCtx.sessionManager.getSessionFile());
-        nextCtx.ui.notify(`Switched to ${mechPaneLabel()}`, "info");
+        rememberMechPaneSession(nextCtx.cwd, nextCtx.sessionManager.getSessionFile());
+        nextCtx.ui.notify(`Switched to ${mechPaneLabel(nextCtx.cwd)}`, "info");
       },
     });
     if (result.cancelled) ctx.ui.notify("Pane switch cancelled", "info");
