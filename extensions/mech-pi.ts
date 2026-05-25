@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { AssistantMessageComponent, CustomEditor, DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { complete, StringEnum, type Message } from "@earendil-works/pi-ai";
 import { Container, Key, Markdown, Spacer, Text, deleteAllKittyImages, deleteKittyImage, getCapabilities, getCellDimensions, getImageDimensions, imageFallback, isKeyRelease, matchesKey, parseKey, renderImage, truncateToWidth, visibleWidth, type AutocompleteItem, type AutocompleteProvider, type EditorTheme, type Focusable, type OverlayHandle, type OverlayOptions, type TUI } from "@earendil-works/pi-tui";
