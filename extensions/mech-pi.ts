@@ -7400,7 +7400,7 @@ async function handleMechPaneCommand(args: string, ctx: ExtensionCommandContext)
 
 function handleMechRagModeCommand(pi: ExtensionAPI, args: string, ctx: ExtensionCommandContext): boolean {
   const cmd = args.trim().toLowerCase();
-  if (!cmd || !["status", "on", "off", "enable", "enabled", "disable", "disabled"].includes(cmd)) return false;
+  if (!cmd || !["status", "on", "off"].includes(cmd)) return false;
   const vectorStore = fss.existsSync(mechIngestStorePath(ctx.cwd));
   const currentlyDisabled = mechRagDisabled(ctx, Boolean(pi.getFlag("no-mech-rag")));
   if (cmd === "status") {
@@ -7408,7 +7408,7 @@ function handleMechRagModeCommand(pi: ExtensionAPI, args: string, ctx: Extension
     ctx.ui.notify(`Mech-pi RAG is ${currentlyDisabled ? "off" : "on"} for this session. New-pane default: ${paneDefault}. Vector store: ${vectorStore ? "found" : "missing"}.`, currentlyDisabled ? "warning" : "info");
     return true;
   }
-  const enable = cmd === "on" || cmd === "enable" || cmd === "enabled";
+  const enable = cmd === "on";
   setMechPaneDefaultRag(ctx.cwd, enable);
   appendCurrentMechRagMode(pi, enable, `/mechrag ${enable ? "on" : "off"}`);
   if (enable) enableMechRetrieveTool(pi);
@@ -7821,6 +7821,11 @@ export default function mechPi(pi: ExtensionAPI) {
   });
   pi.registerCommand("mechrag", {
     description: "Show or change mech-pi local ingest-store retrieval for this session. Usage: /mechrag [status|on|off]",
+    getArgumentCompletions: (prefix: string): AutocompleteItem[] | null => {
+      const items = ["status", "on", "off"].map(mode => ({ value: mode, label: mode, description: "Mech-pi RAG mode" }));
+      const filtered = items.filter(item => item.value.startsWith(prefix.trim().toLowerCase()));
+      return filtered.length ? filtered : items;
+    },
     handler: async (args, ctx) => {
       if (!handleMechRagModeCommand(pi, args.trim() || "status", ctx)) ctx.ui.notify("Usage: /mechrag [status|on|off]", "warning");
     }
