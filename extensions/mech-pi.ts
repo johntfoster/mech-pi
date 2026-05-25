@@ -12,6 +12,65 @@ import { fileURLToPath } from "node:url";
 
 const mechPiPackageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+type MechPiRcConfig = Record<string, string>;
+let mechPiRcConfig: MechPiRcConfig = {};
+let mechPiRcLoadedCwd = "";
+
+function parseMechPiRc(text: string): MechPiRcConfig {
+  const out: MechPiRcConfig = {};
+  for (const rawLine of text.split(/\r?\n/)) {
+    let line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    if (line.startsWith("export ")) line = line.slice("export ".length).trim();
+    const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([\s\S]*)$/);
+    if (!m) continue;
+    let value = m[2].trim();
+    const quote = value[0];
+    if ((quote === "'" || quote === '"') && value.endsWith(quote)) {
+      value = value.slice(1, -1);
+      if (quote === '"') value = value.replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\r/g, "\r").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+    } else {
+      value = value.replace(/\s+#.*$/, "").trim();
+    }
+    out[m[1]] = value;
+  }
+  return out;
+}
+
+function readMechPiRcFile(file: string): MechPiRcConfig {
+  try { return parseMechPiRc(fss.readFileSync(file, "utf8")); } catch { return {}; }
+}
+
+function loadMechPiRcConfigSync(cwd: string): MechPiRcConfig {
+  const home = process.env.HOME;
+  const homeRc = home ? path.join(home, ".mechpirc") : undefined;
+  const localRc = path.resolve(cwd, ".mechpirc");
+  const out: MechPiRcConfig = {};
+  const seen = new Set<string>();
+  for (const file of [homeRc, localRc].filter((x): x is string => Boolean(x))) {
+    const abs = path.resolve(file);
+    if (seen.has(abs)) continue;
+    seen.add(abs);
+    Object.assign(out, readMechPiRcFile(abs));
+  }
+  return out;
+}
+
+function refreshMechPiRcConfig(cwd: string): void {
+  mechPiRcConfig = loadMechPiRcConfigSync(cwd);
+  mechPiRcLoadedCwd = cwd;
+}
+
+refreshMechPiRcConfig(process.cwd());
+
+function mechEnv(name: string, fallback?: string): string | undefined {
+  return mechPiRcConfig[name] ?? process.env[name] ?? fallback;
+}
+
+function mechRuntimeEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return { ...process.env, ...mechPiRcConfig, ...(extra ?? {}) };
+}
+
 interface EquationNumberInfo {
   label?: string;
   number: string;
@@ -557,7 +616,7 @@ async function writeMap(cwd: string, map: PaperMap) {
 }
 
 function promptHistoryLimit(): number {
-  const n = Number.parseInt(process.env.MECHPI_PROMPT_HISTORY_LIMIT ?? "100", 10);
+  const n = Number.parseInt(mechEnv("MECHPI_PROMPT_HISTORY_LIMIT") ?? "100", 10);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 100;
 }
 
@@ -577,7 +636,7 @@ async function savePromptHistory(file: string, history: string[]): Promise<void>
 
 function run(cmd: string, args: string[], cwd: string, signal?: AbortSignal, env?: NodeJS.ProcessEnv): Promise<{ code: number | null, stdout: string, stderr: string }> {
   return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { cwd, shell: false, env: env ? { ...process.env, ...env } : process.env });
+    const p = spawn(cmd, args, { cwd, shell: false, env: mechRuntimeEnv(env) });
     let stdout = "", stderr = "";
     p.stdout.on("data", d => stdout += d.toString());
     p.stderr.on("data", d => stderr += d.toString());
@@ -588,14 +647,15 @@ function run(cmd: string, args: string[], cwd: string, signal?: AbortSignal, env
 }
 
 function mechPiPythonCommand(): string {
-  if (process.env.MECHPI_PYTHON) return process.env.MECHPI_PYTHON;
+  const configured = mechEnv("MECHPI_PYTHON");
+  if (configured) return configured;
   const venvPython = path.join(mechPiPackageRoot, ".mechpi-python", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
   return fss.existsSync(venvPython) ? venvPython : "python3";
 }
 
 function runWithInput(cmd: string, args: string[], input: string, cwd: string, signal?: AbortSignal, env?: NodeJS.ProcessEnv): Promise<{ code: number | null, stdout: string, stderr: string }> {
   return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { cwd, shell: false, env: env ? { ...process.env, ...env } : process.env });
+    const p = spawn(cmd, args, { cwd, shell: false, env: mechRuntimeEnv(env) });
     let stdout = "", stderr = "";
     p.stdout.on("data", d => stdout += d.toString());
     p.stderr.on("data", d => stderr += d.toString());
@@ -730,18 +790,18 @@ async function rootPreamble(ctx: ExtensionContext): Promise<string> {
 }
 
 async function adaptiveEquationPreviewDpi(ctx: ExtensionContext, pdfPath: string, targetWidthCells?: number): Promise<number> {
-  const forced = Number.parseInt(process.env.MECHPI_EQUATION_PREVIEW_DPI ?? "", 10);
+  const forced = Number.parseInt(mechEnv("MECHPI_EQUATION_PREVIEW_DPI") ?? "", 10);
   if (Number.isFinite(forced) && forced > 0) return forced;
 
-  const maxQuality = /^(1|true|yes|on)$/i.test(process.env.MECHPI_PREVIEW_MAX_QUALITY ?? "");
+  const maxQuality = /^(1|true|yes|on)$/i.test(mechEnv("MECHPI_PREVIEW_MAX_QUALITY") ?? "");
   const fallback = maxQuality ? 4800 : 1200;
   const minDpiDefault = maxQuality ? "2400" : "600";
   const maxDpiDefault = maxQuality ? "9600" : "2400";
   const oversampleDefault = maxQuality ? "8" : "2";
-  const minDpi = Number.parseInt(process.env.MECHPI_EQUATION_PREVIEW_MIN_DPI ?? minDpiDefault, 10) || Number.parseInt(minDpiDefault, 10);
-  const maxDpi = Number.parseInt(process.env.MECHPI_EQUATION_PREVIEW_MAX_DPI ?? maxDpiDefault, 10) || Number.parseInt(maxDpiDefault, 10);
+  const minDpi = Number.parseInt(mechEnv("MECHPI_EQUATION_PREVIEW_MIN_DPI") ?? minDpiDefault, 10) || Number.parseInt(minDpiDefault, 10);
+  const maxDpi = Number.parseInt(mechEnv("MECHPI_EQUATION_PREVIEW_MAX_DPI") ?? maxDpiDefault, 10) || Number.parseInt(maxDpiDefault, 10);
   const oversampleLimit = maxQuality ? 16 : 4;
-  const oversample = Math.max(1, Math.min(oversampleLimit, Number.parseFloat(process.env.MECHPI_EQUATION_PREVIEW_OVERSAMPLE ?? oversampleDefault) || Number.parseFloat(oversampleDefault)));
+  const oversample = Math.max(1, Math.min(oversampleLimit, Number.parseFloat(mechEnv("MECHPI_EQUATION_PREVIEW_OVERSAMPLE") ?? oversampleDefault) || Number.parseFloat(oversampleDefault)));
   const widthCells = Math.max(1, targetWidthCells ?? Math.floor((process.stdout.columns || 100) * 0.9));
   const targetPixels = widthCells * getCellDimensions().widthPx * oversample;
 
@@ -827,7 +887,7 @@ ${preamble}
 `;
   await fs.writeFile(texPath, document, "utf8");
   await fs.writeFile(bibPath, `${rawBibtex.trim()}\n`, "utf8");
-  const env = { TEXINPUTS: `${ctx.cwd}//:${process.env.TEXINPUTS ?? ""}`, BSTINPUTS: `${ctx.cwd}//:${process.env.BSTINPUTS ?? ""}`, BIBINPUTS: `${ctx.cwd}//:${process.env.BIBINPUTS ?? ""}` };
+  const env = { TEXINPUTS: `${ctx.cwd}//:${mechEnv("TEXINPUTS") ?? ""}`, BSTINPUTS: `${ctx.cwd}//:${mechEnv("BSTINPUTS") ?? ""}`, BIBINPUTS: `${ctx.cwd}//:${mechEnv("BIBINPUTS") ?? ""}` };
   const latex1 = await run("pdflatex", ["-halt-on-error", "-interaction=nonstopmode", "-output-directory", dir, texPath], ctx.cwd, undefined, env);
   if (latex1.code !== 0) throw new Error(`pdflatex failed while rendering citation preview:\n${(latex1.stdout + latex1.stderr).slice(-3000)}`);
   const bibTool = cfg.biblatex ? (commandExists("biber") ? "biber" : "bibtex") : "bibtex";
@@ -922,7 +982,7 @@ ${previewTex}
 \\end{document}
 `;
   await fs.writeFile(texPath, document, "utf8");
-  const env = { TEXINPUTS: `${ctx.cwd}//:${process.env.TEXINPUTS ?? ""}` };
+  const env = { TEXINPUTS: `${ctx.cwd}//:${mechEnv("TEXINPUTS") ?? ""}` };
   const latex = await run("pdflatex", ["-halt-on-error", "-interaction=nonstopmode", "-output-directory", dir, texPath], ctx.cwd, undefined, env);
   if (latex.code !== 0) throw new Error(`pdflatex failed while rendering equation:\n${(latex.stdout + latex.stderr).slice(-3000)}`);
   const previewDpi = await adaptiveEquationPreviewDpi(ctx, pdfPath, targetWidthCells);
@@ -1151,10 +1211,10 @@ let latexPreviewCwd = process.cwd();
 let suppressAssistantLatexPreviewImages = 0;
 
 function terminalLooksLight(): boolean {
-  const forced = process.env.MECHPI_LATEX_PREVIEW_FG?.toLowerCase();
+  const forced = mechEnv("MECHPI_LATEX_PREVIEW_FG")?.toLowerCase();
   if (forced === "black" || forced === "dark") return true;
   if (forced === "white" || forced === "light") return false;
-  const colorfgbg = process.env.COLORFGBG ?? "";
+  const colorfgbg = mechEnv("COLORFGBG") ?? "";
   const bg = colorfgbg.split(";").map(s => Number.parseInt(s, 10)).filter(Number.isFinite).at(-1);
   if (bg === undefined) return false;
   if (bg >= 232) return bg >= 244;
@@ -1236,9 +1296,9 @@ const latexPreviewKittyImageIds = new Set<number>();
 const latexPreviewImagePayloads = new Map<number, { source: string; base64: string }>();
 let latexPreviewScrollSuppressed = false;
 let latexPreviewScrollSuppressTimer: ReturnType<typeof setTimeout> | null = null;
-const LATEX_PREVIEW_SCALE = Math.max(0.25, Math.min(1.5, Number.parseFloat(process.env.MECHPI_LATEX_PREVIEW_SCALE ?? "1.0") || 1.0));
+function latexPreviewScale(): number { return Math.max(0.25, Math.min(1.5, Number.parseFloat(mechEnv("MECHPI_LATEX_PREVIEW_SCALE") ?? "1.0") || 1.0)); }
 
-function suppressLatexPreviewImagesForScroll(tui?: TUI, idleMs = Number.parseInt(process.env.MECHPI_SCROLL_IMAGE_IDLE_MS ?? "2000", 10) || 2000): void {
+function suppressLatexPreviewImagesForScroll(tui?: TUI, idleMs = Number.parseInt(mechEnv("MECHPI_SCROLL_IMAGE_IDLE_MS") ?? "2000", 10) || 2000): void {
   if (!useTerminalLatexImages() || getCapabilities().images !== "kitty") return;
   if (!latexPreviewScrollSuppressed) {
     latexPreviewScrollSuppressed = true;
@@ -1259,7 +1319,7 @@ function suppressLatexPreviewImagesForScroll(tui?: TUI, idleMs = Number.parseInt
 
 function scaledLatexPreviewWidth(width: number, reservedCells = 2): number {
   const available = Math.max(1, width - reservedCells);
-  return Math.max(1, Math.floor(available * LATEX_PREVIEW_SCALE));
+  return Math.max(1, Math.floor(available * latexPreviewScale()));
 }
 
 function renderAspectRatioPng(base64: string, width: number, fallbackColor: (s: string) => string, imageId?: number): string[] {
@@ -1360,7 +1420,7 @@ class AnsiLatexImage {
 }
 
 function useTerminalLatexImages(): boolean {
-  const forced = process.env.MECHPI_LATEX_PREVIEW_IMAGES?.toLowerCase();
+  const forced = mechEnv("MECHPI_LATEX_PREVIEW_IMAGES")?.toLowerCase();
   if (forced === "1" || forced === "true" || forced === "kitty") return true;
   if (forced === "0" || forced === "false" || forced === "ansi") return false;
   // Native terminal images are the only readable rendered-PNG path.  In tmux,
@@ -1377,8 +1437,8 @@ function latexPreviewComponent(base64: string, imageIdKey: string, maxWidthCells
 }
 
 function renderInlineLatexPngSync(tex: string, display: boolean, fg: "black" | "white", cwd: string): { base64?: string; error?: string } {
-  const maxQuality = /^(1|true|yes|on)$/i.test(process.env.MECHPI_PREVIEW_MAX_QUALITY ?? "");
-  const dpi = process.env.MECHPI_LATEX_PREVIEW_DPI ?? (maxQuality ? "2400" : "900");
+  const maxQuality = /^(1|true|yes|on)$/i.test(mechEnv("MECHPI_PREVIEW_MAX_QUALITY") ?? "");
+  const dpi = mechEnv("MECHPI_LATEX_PREVIEW_DPI") ?? (maxQuality ? "2400" : "900");
   const key = createHash("sha1").update(`${fg}\0${display}\0${dpi}\0${tex}`).digest("hex");
   const cached = latexPreviewCache.get(key);
   if (cached) return cached;
@@ -2991,7 +3051,7 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
     else this.enterInsert();
     this.tui.requestRender();
   }
-  insertVoiceText(text: string, submit = /^(1|true|yes|on)$/i.test(process.env.MECHPI_VOICE_AUTOSUBMIT ?? "")): void {
+  insertVoiceText(text: string, submit = /^(1|true|yes|on)$/i.test(mechEnv("MECHPI_VOICE_AUTOSUBMIT") ?? "")): void {
     const cleaned = text.trim();
     if (!cleaned) return;
     const current = this.getText();
@@ -3018,7 +3078,7 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
         this.status = "VOICE REC";
         void voice.startRecording("space-hold").catch(err => voice.notifyError(err));
         this.tui.requestRender();
-      }, Number.parseInt(process.env.MECHPI_VOICE_HOLD_MS ?? "1000", 10) || 1000);
+      }, Number.parseInt(mechEnv("MECHPI_VOICE_HOLD_MS") ?? "1000", 10) || 1000);
       return true;
     }
     if (this.voiceSpaceTimer) {
@@ -3030,7 +3090,7 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
     if (this.voiceSpaceRecording) {
       this.voiceSpaceRecording = false;
       this.status = "VOICE STOPPING";
-      voice.stopAfter(Number.parseInt(process.env.MECHPI_VOICE_RELEASE_GRACE_MS ?? "1000", 10) || 1000);
+      voice.stopAfter(Number.parseInt(mechEnv("MECHPI_VOICE_RELEASE_GRACE_MS") ?? "1000", 10) || 1000);
       return true;
     }
     return false;
@@ -3390,7 +3450,7 @@ function commandExists(command: string): boolean {
 
 function parseMechEditArgs(raw: string): { query: string; inline: boolean } {
   const words = splitCommandWords(raw);
-  const editMode = (process.env.MECHPI_EDIT_MODE ?? "").toLowerCase();
+  const editMode = (mechEnv("MECHPI_EDIT_MODE") ?? "").toLowerCase();
   let inline = editMode === "external" ? false : true;
   const kept: string[] = [];
   for (const word of words) {
@@ -3448,7 +3508,7 @@ async function openSourceFilePopupEditor(ctx: ExtensionContext, target: EditTarg
 
 function openExternalEditorAt(cwd: string, target: EditTarget): { command: string; args: string[]; detached: boolean } {
   const abs = path.resolve(cwd, target.file);
-  const editorWords = splitCommandWords(process.env.MECHPI_EDITOR ?? process.env.VISUAL ?? process.env.EDITOR ?? "nvim");
+  const editorWords = splitCommandWords(mechEnv("MECHPI_EDITOR") ?? mechEnv("VISUAL") ?? mechEnv("EDITOR") ?? "nvim");
   const editor = editorWords[0] ?? "nvim";
   const editorArgs = editorWords.slice(1);
   const base = path.basename(editor);
@@ -3461,7 +3521,7 @@ function openExternalEditorAt(cwd: string, target: EditTarget): { command: strin
   }
 
   const args = target.wholeFile ? [...editorArgs, abs] : [...editorArgs, `+${target.line}`, abs];
-  const terminalWords = splitCommandWords(process.env.MECHPI_EDITOR_TERMINAL ?? "");
+  const terminalWords = splitCommandWords(mechEnv("MECHPI_EDITOR_TERMINAL") ?? "");
   const hasKitty = commandExists("kitty");
   if (terminalWords.length || hasKitty) {
     const terminal = terminalWords[0] ?? "kitty";
@@ -3613,7 +3673,7 @@ async function detectBibFile(cwd: string, map: PaperMap): Promise<string> {
 
 type GitPathStatus = { root?: string; rel?: string; tracked: boolean; porcelain: string; exists: boolean };
 
-function gitGuardEnabled(): boolean { return !/^(0|false|off|no)$/i.test(process.env.MECHPI_GIT_GUARD ?? "1"); }
+function gitGuardEnabled(): boolean { return !/^(0|false|off|no)$/i.test(mechEnv("MECHPI_GIT_GUARD") ?? "1"); }
 function compileRelevantExtension(abs: string): boolean {
   return new Set([".tex", ".bib", ".sty", ".cls", ".bst", ".bbx", ".cbx", ".png", ".jpg", ".jpeg", ".pdf", ".eps", ".svg"]).has(path.extname(abs).toLowerCase());
 }
@@ -3691,7 +3751,7 @@ async function reportPostCompileUntrackedRelevant(ctx: ExtensionContext, map: Pa
 
 
 async function configuredMiniModel(ctx: ExtensionContext, envName: string): Promise<any | undefined> {
-  const spec = process.env[envName] ?? process.env.MECHPI_MINI_MODEL ?? "openai/gpt-4o-mini";
+  const spec = mechEnv(envName) ?? mechEnv("MECHPI_MINI_MODEL") ?? "openai/gpt-4o-mini";
   const sep = spec.includes("/") ? "/" : spec.includes(":") ? ":" : "";
   if (sep) {
     const [provider, ...rest] = spec.split(sep);
@@ -3703,7 +3763,7 @@ async function configuredMiniModel(ctx: ExtensionContext, envName: string): Prom
 }
 
 async function commitMessageModel(ctx: ExtensionContext): Promise<any | undefined> {
-  const spec = process.env.MECHPI_COMMIT_MODEL ?? process.env.MECHPI_MINI_MODEL ?? "openai/gpt-4o-mini";
+  const spec = mechEnv("MECHPI_COMMIT_MODEL") ?? mechEnv("MECHPI_MINI_MODEL") ?? "openai/gpt-4o-mini";
   const sep = spec.includes("/") ? "/" : spec.includes(":") ? ":" : "";
   if (sep) {
     const [provider, ...rest] = spec.split(sep);
@@ -3739,7 +3799,7 @@ async function generateCommitMessage(ctx: ExtensionContext, root: string, rels: 
 }
 
 async function autoCommitPaths(ctx: ExtensionContext, absPaths: string[], reason: string): Promise<void> {
-  if (/^(0|false|off|no)$/i.test(process.env.MECHPI_AUTO_COMMIT_EDITS ?? "1")) return;
+  if (/^(0|false|off|no)$/i.test(mechEnv("MECHPI_AUTO_COMMIT_EDITS") ?? "1")) return;
   const targets = unique(absPaths.map(p => path.resolve(p)));
   if (!targets.length) return;
   const groups = new Map<string, string[]>();
@@ -3766,7 +3826,7 @@ async function autoCommitPaths(ctx: ExtensionContext, absPaths: string[], reason
 type AgentGitGuardToolState = { paths: string[]; reason: string; mutatingBashRoot?: string };
 const agentGitGuardToolState = new Map<string, AgentGitGuardToolState>();
 
-function agentGitGuardEnabled(): boolean { return !/^(0|false|off|no)$/i.test(process.env.MECHPI_AGENT_GIT_GUARD ?? "1"); }
+function agentGitGuardEnabled(): boolean { return !/^(0|false|off|no)$/i.test(mechEnv("MECHPI_AGENT_GIT_GUARD") ?? "1"); }
 
 async function gitRootForDir(cwd: string, dir: string): Promise<string | null> {
   const r = await run("git", ["-C", dir, "rev-parse", "--show-toplevel"], cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
@@ -3861,7 +3921,7 @@ type BibSyncConfig = { globalBib?: string; enabled: boolean };
 type BibSyncSummary = { globalBib: string; localBib: string; cited: string[]; addedToGlobal: string[]; wroteLocal: number; warnings: string[] };
 
 function configuredGlobalBibPath(cwd: string): string | undefined {
-  const raw = process.env.MECHPI_GLOBAL_BIB;
+  const raw = mechEnv("MECHPI_GLOBAL_BIB");
   if (raw && !/^(0|false|off|none)$/i.test(raw)) return path.resolve(cwd, expandUserPath(raw));
   const fallback = expandUserPath("~/Documents/LaTeX/include/all.bib");
   return fss.existsSync(fallback) ? fallback : undefined;
@@ -4208,7 +4268,7 @@ function bestCitationUrl(c: CitationCandidate): string | null {
 }
 
 function openUrlExternal(url: string): void {
-  spawn(process.env.BROWSER ?? "xdg-open", [url], { detached: true, stdio: "ignore" }).unref();
+  spawn(mechEnv("BROWSER") ?? "xdg-open", [url], { detached: true, stdio: "ignore" }).unref();
 }
 
 function googleScholarManualCandidate(prompt: string): CitationCandidate {
@@ -4236,7 +4296,7 @@ async function hydrateCandidateBibtex(c: CitationCandidate, existingKeys: Set<st
 
 
 function citationReferenceRoot(): string {
-  return path.resolve(expandUserPath(process.env.MECHPI_REFERENCES_PATH ?? process.env.MECHPI_REFERENCE_PATH ?? "~/Documents/References"));
+  return path.resolve(expandUserPath(mechEnv("MECHPI_REFERENCES_PATH") ?? mechEnv("MECHPI_REFERENCE_PATH") ?? "~/Documents/References"));
 }
 
 function safePathPart(s: string, fallback = "untitled"): string {
@@ -4255,7 +4315,7 @@ function candidatePdfUrls(c: CitationCandidate): string[] {
 
 async function downloadPdfToTmp(ctx: ExtensionContext, c: CitationCandidate): Promise<string | null> {
   if (c.tempPdfPath && fss.existsSync(c.tempPdfPath)) return c.tempPdfPath;
-  const tmpDir = path.join(process.env.TMPDIR ?? "/tmp", "mech-pi-citations");
+  const tmpDir = path.join(mechEnv("TMPDIR") ?? "/tmp", "mech-pi-citations");
   await fs.mkdir(tmpDir, { recursive: true });
   for (const url of candidatePdfUrls(c)) {
     try {
@@ -4555,7 +4615,7 @@ function candidateDocumentHints(c: CitationCandidate): string[] {
 }
 
 async function findLocalDocumentForCandidate(cwd: string, c: CitationCandidate): Promise<string | null> {
-  const home = process.env.HOME;
+  const home = mechEnv("HOME");
   if (!home) return null;
   const hints = candidateDocumentHints(c).filter(t => t.length >= 4).slice(0, 6);
   if (!hints.length) return null;
@@ -5253,7 +5313,7 @@ class MechIngestPicker implements Focusable {
     if (!rel) { this.ctx.ui.notify("No stored source document is available for this item.", "warning"); return; }
     const abs = path.isAbsolute(rel) ? rel : path.join(this.ctx.cwd, rel);
     if (!fss.existsSync(abs)) { this.ctx.ui.notify(`Source document not found: ${rel}`, "warning"); return; }
-    const opener = process.env.MECHPI_DOCUMENT_VIEWER ?? process.env.MECHPI_PDF_VIEWER ?? "xdg-open";
+    const opener = mechEnv("MECHPI_DOCUMENT_VIEWER") ?? mechEnv("MECHPI_PDF_VIEWER") ?? "xdg-open";
     try {
       spawn(opener, [abs], { cwd: this.ctx.cwd, detached: true, stdio: "ignore" }).unref();
       this.ctx.ui.notify(`Opening ${rel} with ${opener}`, "info");
@@ -5609,8 +5669,8 @@ async function localDocumentMatchesMetadata(cwd: string, metadata: BibPaperMetad
 }
 
 function expandUserPath(p: string): string {
-  if (p === "~") return process.env.HOME ?? p;
-  if (p.startsWith("~/")) return path.join(process.env.HOME ?? "", p.slice(2));
+  if (p === "~") return mechEnv("HOME") ?? p;
+  if (p.startsWith("~/")) return path.join(mechEnv("HOME") ?? "", p.slice(2));
   return p;
 }
 
@@ -5648,7 +5708,7 @@ function bibFileFieldValue(cwd: string, abs: string): string {
 }
 
 function preferredIngestSearchRoots(): string[] {
-  const raw = process.env.MECHPI_INGEST_PREFERRED_PATHS ?? process.env.MECHPI_PREFERRED_PATHS;
+  const raw = mechEnv("MECHPI_INGEST_PREFERRED_PATHS") ?? mechEnv("MECHPI_PREFERRED_PATHS");
   const parts = raw
     ? raw.split(new RegExp(`[${escapeRegExp(path.delimiter)},\\n]+`)).map(s => s.trim()).filter(Boolean)
     : ["~/Downloads", "~/Documents/References"];
@@ -5693,17 +5753,17 @@ async function findDocumentForBibInRoots(cwd: string, e: BibEntry, metadata: Bib
 
 async function findPreferredDocumentForBib(cwd: string, e: BibEntry, metadata: BibPaperMetadata, onProgress?: (fraction: number, message: string) => void): Promise<LocalDocumentSearchResult> {
   return findDocumentForBibInRoots(cwd, e, metadata, preferredIngestSearchRoots(), "preferred paths", {
-    byName: Number.parseInt(process.env.MECHPI_PREFERRED_SEARCH_NAME_LIMIT ?? "5000", 10),
-    broad: Number.parseInt(process.env.MECHPI_PREFERRED_SEARCH_LIMIT ?? "10000", 10),
+    byName: Number.parseInt(mechEnv("MECHPI_PREFERRED_SEARCH_NAME_LIMIT") ?? "5000", 10),
+    broad: Number.parseInt(mechEnv("MECHPI_PREFERRED_SEARCH_LIMIT") ?? "10000", 10),
   }, onProgress);
 }
 
 async function findHomeDocumentForBib(cwd: string, e: BibEntry, metadata: BibPaperMetadata, onProgress?: (fraction: number, message: string) => void): Promise<LocalDocumentSearchResult> {
-  const home = process.env.HOME;
+  const home = mechEnv("HOME");
   if (!home) return { note: "$HOME is not set, so no local fallback search was possible." };
   return findDocumentForBibInRoots(cwd, e, metadata, [home], "$HOME", {
-    byName: Number.parseInt(process.env.MECHPI_HOME_SEARCH_NAME_LIMIT ?? "10000", 10),
-    broad: Number.parseInt(process.env.MECHPI_HOME_SEARCH_LIMIT ?? "25000", 10),
+    byName: Number.parseInt(mechEnv("MECHPI_HOME_SEARCH_NAME_LIMIT") ?? "10000", 10),
+    broad: Number.parseInt(mechEnv("MECHPI_HOME_SEARCH_LIMIT") ?? "25000", 10),
   }, onProgress);
 }
 
@@ -5737,12 +5797,12 @@ function parseEmbeddingResponse(raw: string, provider: string, model: string): M
 
 async function embedTexts(cwd: string, texts: string[], signal?: AbortSignal, existing?: MechIngestEmbeddingInfo): Promise<MechEmbeddingResult> {
   if (!texts.length) return { info: existing ?? { provider: "none", model: "none", dimensions: 0 }, embeddings: [] };
-  const provider = (existing?.provider ?? process.env.MECHPI_EMBED_PROVIDER ?? (process.env.MECHPI_EMBED_COMMAND ? "command" : "sentence-transformers")).toLowerCase();
-  const model = existing?.model ?? process.env.MECHPI_EMBED_MODEL ?? (provider === "openai" ? "text-embedding-3-small" : "sentence-transformers/all-MiniLM-L6-v2");
+  const provider = (existing?.provider ?? mechEnv("MECHPI_EMBED_PROVIDER") ?? (mechEnv("MECHPI_EMBED_COMMAND") ? "command" : "sentence-transformers")).toLowerCase();
+  const model = existing?.model ?? mechEnv("MECHPI_EMBED_MODEL") ?? (provider === "openai" ? "text-embedding-3-small" : "sentence-transformers/all-MiniLM-L6-v2");
   if (provider === "openai") {
-    const apiKey = process.env.OPENAI_API_KEY;
+    const apiKey = mechEnv("OPENAI_API_KEY");
     if (!apiKey) throw new Error("MECHPI_EMBED_PROVIDER=openai requires OPENAI_API_KEY");
-    const r = await fetch(process.env.MECHPI_OPENAI_EMBED_URL ?? "https://api.openai.com/v1/embeddings", {
+    const r = await fetch(mechEnv("MECHPI_OPENAI_EMBED_URL") ?? "https://api.openai.com/v1/embeddings", {
       method: "POST", signal,
       headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({ model, input: texts }),
@@ -5751,7 +5811,7 @@ async function embedTexts(cwd: string, texts: string[], signal?: AbortSignal, ex
     return parseEmbeddingResponse(await r.text(), "openai", model);
   }
   if (provider === "command") {
-    const cmd = process.env.MECHPI_EMBED_COMMAND;
+    const cmd = mechEnv("MECHPI_EMBED_COMMAND");
     if (!cmd) throw new Error("MECHPI_EMBED_PROVIDER=command requires MECHPI_EMBED_COMMAND");
     const r = await runWithInput("bash", ["-lc", cmd], JSON.stringify({ texts, model }), cwd, signal);
     if (r.code !== 0) throw new Error(`MECHPI_EMBED_COMMAND failed: ${r.stderr || r.stdout}`);
@@ -5826,7 +5886,7 @@ async function tryDownloadPdf(cwd: string, e: BibEntry, metadata: BibPaperMetada
 type IngestDocumentChoice = { kind: "candidate"; path: string } | { kind: "manual" } | null;
 
 function displayPathForIngest(cwd: string, abs: string): string {
-  const home = process.env.HOME;
+  const home = mechEnv("HOME");
   if (home && abs.startsWith(`${home}${path.sep}`)) return `~/${path.relative(home, abs)}`;
   const rel = path.relative(cwd, abs);
   return rel && !rel.startsWith("..") && !path.isAbsolute(rel) ? rel : abs;
@@ -5869,7 +5929,7 @@ class MechIngestDocumentCandidatePicker implements Focusable {
   private openSelected(): void {
     const candidate = this.candidates.slice(0, 5)[this.selected];
     if (!candidate) { this.done({ kind: "manual" }); return; }
-    const opener = process.env.MECHPI_DOCUMENT_VIEWER ?? process.env.MECHPI_PDF_VIEWER ?? "xdg-open";
+    const opener = mechEnv("MECHPI_DOCUMENT_VIEWER") ?? mechEnv("MECHPI_PDF_VIEWER") ?? "xdg-open";
     try { spawn(opener, [candidate.path], { cwd: this.cwd, detached: true, stdio: "ignore" }).unref(); }
     catch {}
   }
@@ -6036,7 +6096,7 @@ function ingestFilePathAutocompleteProvider(cwd: string, paths: string[]): Autoc
 
 async function promptForIngestFilePath(ctx: ExtensionContext, bib: BibEntry, metadata: BibPaperMetadata, paths: string[], layer?: MechIngestDrillLayer): Promise<string | null | "back"> {
   if (!ctx.hasUI) return null;
-  const initial = process.env.HOME ? `${process.env.HOME}/` : "";
+  const initial = mechEnv("HOME") ? `${mechEnv("HOME")}/` : "";
   const result = await mechIngestDrillCustom<MechIngestPathInputResult>(ctx, nextMechIngestDrillLayer(layer), (tui, theme, keybindings, done) => opaquePopup(new MechIngestPathInputEditor(tui, theme, keybindings, `Provide source file for ${bib.key}`, initial, ingestFilePathAutocompleteProvider(ctx.cwd, paths), done), theme), { width: "86%", maxHeight: "70%", anchor: "top-center", row: 3 });
   if (!result) return null;
   if (result.kind === "back") return "back";
@@ -6299,7 +6359,7 @@ function boundedPositiveInteger(value: unknown, fallback: number, max: number): 
 }
 
 function ingestAutoRetrievalEnabled(): boolean {
-  return /^(1|true|yes|on)$/i.test(process.env.MECHPI_AUTO_RAG ?? process.env.MECHPI_AUTO_RETRIEVE ?? "");
+  return /^(1|true|yes|on)$/i.test(mechEnv("MECHPI_AUTO_RAG") ?? mechEnv("MECHPI_AUTO_RETRIEVE") ?? "");
 }
 
 async function retrieveMechIngestResults(cwd: string, prompt: string, options: MechIngestRetrievalOptions = {}): Promise<MechIngestRetrievalResult> {
@@ -6443,7 +6503,7 @@ async function runMechAddCite(args: string, ctx: ExtensionContext): Promise<void
 function shellQuote(s: string): string { return `'${s.replace(/'/g, `'\\''`)}'`; }
 
 function envFlag(name: string, defaultValue = false): boolean {
-  const raw = process.env[name];
+  const raw = mechEnv(name);
   if (raw === undefined) return defaultValue;
   return /^(1|true|yes|on)$/i.test(raw);
 }
@@ -6526,7 +6586,7 @@ class VoiceInputController {
   }
 
   startWakeLoop(): void {
-    const command = process.env.MECHPI_WAKE_WORD_COMMAND;
+    const command = mechEnv("MECHPI_WAKE_WORD_COMMAND");
     if (!command) throw new Error("Set MECHPI_WAKE_WORD_COMMAND to a local command that exits 0 when it hears the wake word, e.g. an openWakeWord/Porcupine wrapper.");
     if (this.wakeEnabled) return;
     this.wakeEnabled = true;
@@ -6549,7 +6609,7 @@ class VoiceInputController {
 
   private spawnWakeCommand(): void {
     if (!this.wakeEnabled || this.wakeChild || this.recorder) return;
-    const command = process.env.MECHPI_WAKE_WORD_COMMAND;
+    const command = mechEnv("MECHPI_WAKE_WORD_COMMAND");
     if (!command) return;
     this.ctx.ui.setStatus("wake", this.ctx.ui.theme.fg("dim", "wake: listening"));
     this.wakeChild = spawn("bash", ["-lc", command], { cwd: this.ctx.cwd, stdio: "ignore" });
@@ -6571,7 +6631,7 @@ class VoiceInputController {
     if (text) activePromptEditor?.insertVoiceText(text);
     else this.ctx.ui.notify("Speech transcription returned no text.", "warning");
     this.ctx.ui.setStatus("voice", undefined);
-    if (!/^(1|true|yes|on)$/i.test(process.env.MECHPI_KEEP_VOICE_AUDIO ?? "")) {
+    if (!/^(1|true|yes|on)$/i.test(mechEnv("MECHPI_KEEP_VOICE_AUDIO") ?? "")) {
       fs.rm(path.dirname(audio), { recursive: true, force: true }).catch(() => {});
     }
     if (this.wakeEnabled) setTimeout(() => this.spawnWakeCommand(), 250);
@@ -6579,9 +6639,10 @@ class VoiceInputController {
 
   private hasRecorder(): boolean { return this.findRecorder() !== null; }
   private findRecorder(): RecorderSpec | null {
-    if (process.env.MECHPI_RECORD_COMMAND) return { cmd: "bash", args: ["-lc", process.env.MECHPI_RECORD_COMMAND], name: "MECHPI_RECORD_COMMAND" };
-    const silence = process.env.MECHPI_VOICE_SILENCE_SECONDS ?? "1.0";
-    const threshold = process.env.MECHPI_VOICE_SILENCE_THRESHOLD ?? "1%";
+    const customRecord = mechEnv("MECHPI_RECORD_COMMAND");
+    if (customRecord) return { cmd: "bash", args: ["-lc", customRecord], name: "MECHPI_RECORD_COMMAND" };
+    const silence = mechEnv("MECHPI_VOICE_SILENCE_SECONDS") ?? "1.0";
+    const threshold = mechEnv("MECHPI_VOICE_SILENCE_THRESHOLD") ?? "1%";
     if (commandExists("rec")) return { cmd: "rec", args: ["-q", "-r", "16000", "-c", "1", "-b", "16", "{audio}", "silence", "1", "0.1", threshold, "1", silence, threshold], name: "sox rec (auto-silence)" };
     if (commandExists("parecord")) return { cmd: "parecord", args: ["--channels=1", "--rate=16000", "--format=s16le", "--file-format=wav", "{audio}"], name: "parecord" };
     if (commandExists("ffmpeg")) return { cmd: "ffmpeg", args: ["-hide_banner", "-loglevel", "error", "-f", "pulse", "-i", "default", "-ac", "1", "-ar", "16000", "-y", "{audio}"], name: "ffmpeg/pulse" };
@@ -6594,24 +6655,25 @@ class VoiceInputController {
   }
   private hasTranscriber(): boolean { return this.describeTranscriber() !== "missing"; }
   private describeTranscriber(): string {
-    if (process.env.MECHPI_STT_COMMAND) return "MECHPI_STT_COMMAND";
-    if (process.env.MECHPI_WHISPER_CPP_MODEL && process.env.MECHPI_WHISPER_CPP_BIN) return process.env.MECHPI_WHISPER_CPP_BIN;
-    if (process.env.MECHPI_WHISPER_CPP_MODEL && commandExists("whisper-cli")) return "whisper-cli";
+    if (mechEnv("MECHPI_STT_COMMAND")) return "MECHPI_STT_COMMAND";
+    const whisperCppBin = mechEnv("MECHPI_WHISPER_CPP_BIN");
+    if (mechEnv("MECHPI_WHISPER_CPP_MODEL") && whisperCppBin) return whisperCppBin;
+    if (mechEnv("MECHPI_WHISPER_CPP_MODEL") && commandExists("whisper-cli")) return "whisper-cli";
     if (commandExists("whisper")) return "openai-whisper";
     if (commandExists("vosk-transcriber")) return "vosk-transcriber";
     return "missing";
   }
   private async transcribe(audio: string): Promise<string> {
     const dir = path.dirname(audio);
-    const custom = process.env.MECHPI_STT_COMMAND;
+    const custom = mechEnv("MECHPI_STT_COMMAND");
     if (custom) {
       const r = await run("bash", ["-lc", custom.replaceAll("{audio}", shellQuote(audio))], this.ctx.cwd);
       if (r.code !== 0) throw new Error(`MECHPI_STT_COMMAND failed:\n${(r.stderr || r.stdout).slice(-2000)}`);
       return r.stdout.trim();
     }
-    const model = process.env.MECHPI_WHISPER_CPP_MODEL;
-    if (model && (process.env.MECHPI_WHISPER_CPP_BIN || commandExists("whisper-cli"))) {
-      const exe = process.env.MECHPI_WHISPER_CPP_BIN || "whisper-cli";
+    const model = mechEnv("MECHPI_WHISPER_CPP_MODEL");
+    if (model && (mechEnv("MECHPI_WHISPER_CPP_BIN") || commandExists("whisper-cli"))) {
+      const exe = mechEnv("MECHPI_WHISPER_CPP_BIN") || "whisper-cli";
       const outPrefix = path.join(dir, "transcript");
       const r = await run(exe, ["-m", model, "-f", audio, "-otxt", "-of", outPrefix, "-nt"], this.ctx.cwd);
       const txt = await readText(`${outPrefix}.txt`).catch(() => "");
@@ -6619,7 +6681,7 @@ class VoiceInputController {
       return txt.trim() || r.stdout.replace(/\[[^\]]*\]/g, " ").trim();
     }
     if (commandExists("whisper")) {
-      const modelName = process.env.MECHPI_WHISPER_MODEL ?? "tiny.en";
+      const modelName = mechEnv("MECHPI_WHISPER_MODEL") ?? "tiny.en";
       const r = await run("whisper", [audio, "--model", modelName, "--language", "en", "--output_format", "txt", "--output_dir", dir, "--fp16", "False"], this.ctx.cwd);
       const txt = await readText(path.join(dir, `${path.basename(audio, path.extname(audio))}.txt`)).catch(() => "");
       if (r.code !== 0 && !txt.trim()) throw new Error(`whisper failed:\n${(r.stderr || r.stdout).slice(-2000)}`);
@@ -6718,7 +6780,7 @@ async function startMechCompileWatcher(ctx: ExtensionContext): Promise<void> {
         ctx.ui.setStatus("mechcompile-watch", ctx.ui.theme.fg("success", "watching commits"));
       }
     })().catch(err => ctx.ui.notify(err instanceof Error ? err.message : String(err), "error"));
-  }, Number.parseInt(process.env.MECHPI_COMPILE_WATCH_INTERVAL_MS ?? "3000", 10) || 3000);
+  }, Number.parseInt(mechEnv("MECHPI_COMPILE_WATCH_INTERVAL_MS") ?? "3000", 10) || 3000);
   activeMechCompileWatcher = watcher;
   ctx.ui.setStatus("mechcompile-watch", ctx.ui.theme.fg("success", "watching commits"));
   ctx.ui.notify(`mechcompile watcher started${lastHead ? ` at ${lastHead.slice(0, 8)}` : " (git HEAD unavailable yet)"}`, "info");
@@ -6743,9 +6805,10 @@ export default function mechPi(pi: ExtensionAPI) {
   installAssistantLatexPreviewRenderer();
 
   pi.on("session_start", async (_event, ctx) => {
+    refreshMechPiRcConfig(ctx.cwd);
     latexPreviewCwd = ctx.cwd;
     activeVoice = new VoiceInputController(ctx);
-    if (/^(1|true|yes|on)$/i.test(process.env.MECHPI_WAKE_ON_START ?? "") && process.env.MECHPI_WAKE_WORD_COMMAND) {
+    if (/^(1|true|yes|on)$/i.test(mechEnv("MECHPI_WAKE_ON_START") ?? "") && mechEnv("MECHPI_WAKE_WORD_COMMAND")) {
       try { activeVoice.startWakeLoop(); } catch (err) { activeVoice.notifyError(err); }
     }
     const historyFile = promptHistoryPath(ctx.cwd);
@@ -6897,6 +6960,7 @@ export default function mechPi(pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
+    refreshMechPiRcConfig(ctx.cwd);
     const cache = path.join(ctx.cwd, ".mechpi", "paper-map.json");
     let mapNote = "No .mechpi/paper-map.json cache yet; use mech_ingest before detailed paper claims.";
     if (await exists(cache)) {
@@ -7050,7 +7114,7 @@ export default function mechPi(pi: ExtensionAPI) {
       const pdf = params.pdf ?? (map.rootTex ? map.rootTex.replace(/\.tex$/, ".pdf") : "main.pdf");
       const abs = path.resolve(ctx.cwd, pdf);
       if (!fss.existsSync(abs)) return { content: [{ type: "text", text: `PDF not found: ${pdf}. Run mech_compile first.` }], details: { opened: false, pdf } };
-      const command = params.command ?? process.env.MECHPI_PDF_VIEWER ?? "xdg-open";
+      const command = params.command ?? mechEnv("MECHPI_PDF_VIEWER") ?? "xdg-open";
       const child = spawn(command, [abs], { cwd: ctx.cwd, detached: true, stdio: "ignore" });
       child.unref();
       return { content: [{ type: "text", text: `Opened ${pdf} with ${command}.` }], details: { opened: true, pdf, command } };
@@ -7167,7 +7231,7 @@ export default function mechPi(pi: ExtensionAPI) {
     description: "Compile once or watch git commits. Usage: /mechcompile [once|on|off] (default once)",
     handler: async (args, ctx) => { await runMechCompileCommand(args, ctx); }
   });
-  pi.registerCommand("mechpreview", { description: "Open compiled PDF using MECHPI_PDF_VIEWER or xdg-open", handler: async (_args, ctx) => { const map = await loadOrBuildMap(ctx); const pdf = map.rootTex ? map.rootTex.replace(/\.tex$/, ".pdf") : "main.pdf"; spawn(process.env.MECHPI_PDF_VIEWER ?? "xdg-open", [path.resolve(ctx.cwd, pdf)], { detached: true, stdio: "ignore" }).unref(); ctx.ui.notify(`Opening ${pdf}`, "info"); } });
+  pi.registerCommand("mechpreview", { description: "Open compiled PDF using MECHPI_PDF_VIEWER or xdg-open", handler: async (_args, ctx) => { const map = await loadOrBuildMap(ctx); const pdf = map.rootTex ? map.rootTex.replace(/\.tex$/, ".pdf") : "main.pdf"; spawn(mechEnv("MECHPI_PDF_VIEWER") ?? "xdg-open", [path.resolve(ctx.cwd, pdf)], { detached: true, stdio: "ignore" }).unref(); ctx.ui.notify(`Opening ${pdf}`, "info"); } });
   pi.registerCommand("mechquestions", { description: "Ask the agent to interrogate the current mechanics development", handler: async (args, _ctx) => { pi.sendUserMessage(`Use the mechanics research companion mode. Ingest/focus on the TeX source as needed, then ask me pointed development questions about ${args || "the current paper"}. Prioritize assumptions, balance laws, thermodynamics, constitutive choices, notation conflicts, and missing derivation steps.`); } });
   pi.on("session_shutdown", () => { stopMechCompileWatcher(); });
 }

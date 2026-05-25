@@ -241,7 +241,9 @@ Runs latexmk and summarizes errors/warnings.
 
 Opens the compiled PDF.
 
-## Related environment variables
+## Configuration and environment variables
+
+`mech-pi` reads layered `.mechpirc` files on extension load/reload: built-in defaults, then `$HOME/.mechpirc`, then `./.mechpirc` in the current project. Later layers override earlier layers. The file uses simple dotenv-style lines such as `MECHPI_REFERENCES_PATH=~/Documents/References`; blank lines and `#` comments are ignored, and `export KEY=value` is accepted. Values from `.mechpirc` are also passed to mech-pi subprocesses.
 
 - `MECHPI_EDITOR` — preferred external editor for `/mechedit` and low-confidence `/mechaddcite` placement; falls back to `VISUAL`, `EDITOR`, then `nvim`.
 - `MECHPI_EDITOR_TERMINAL` — terminal launcher for terminal editors; defaults to Kitty when available.
