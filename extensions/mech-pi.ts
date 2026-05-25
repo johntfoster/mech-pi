@@ -6762,7 +6762,7 @@ class VoiceInputController {
     this.streamSubmitOnStop = options.submitOnStop === true;
     this.streamCancelled = false;
     this.streamReady = false;
-    const sttArgs = [script, "--lang", mechEnv("MECHPI_VOSK_LANG") ?? "en"];
+    const sttArgs = [script, "--lang", mechEnv("MECHPI_VOSK_LANG") ?? "en-us"];
     const model = mechEnv("MECHPI_VOSK_MODEL");
     const modelName = mechEnv("MECHPI_VOSK_MODEL_NAME");
     if (model) sttArgs.push("--model", model);
