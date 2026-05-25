@@ -2995,7 +2995,18 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
   }
 
   protected handleNormalCommand(data: string, _ch: string | undefined): boolean {
-    if (matchesKey(data, Key.enter) || matchesKey(data, Key.ctrl("s"))) { this.submitPrompt(); return true; }
+    if (isVoiceToggleInput(data)) {
+      const voice = activeVoice;
+      if (!voice?.isEnabled()) { this.status = "VOICE unavailable"; return true; }
+      try { voice.isRecording() ? voice.stopNow() : void voice.startRecording("normal"); }
+      catch (err) { voice.notifyError(err); }
+      return true;
+    }
+    if (matchesKey(data, Key.enter) || matchesKey(data, Key.ctrl("s"))) {
+      if (activeVoice?.isRecording() && this.isVoiceDictating()) activeVoice.stopNow({ submit: true });
+      else this.submitPrompt();
+      return true;
+    }
     if (matchesKey(data, Key.up)) { if (this.browsePromptHistory("older")) return true; CustomEditor.prototype.handleInput.call(this, data); return true; }
     if (matchesKey(data, Key.down)) { if (this.browsePromptHistory("newer")) return true; CustomEditor.prototype.handleInput.call(this, data); return true; }
     return false;
