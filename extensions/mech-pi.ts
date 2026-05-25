@@ -7063,6 +7063,27 @@ async function runMechCompileCommand(args: string, ctx: ExtensionContext): Promi
 
 let activePromptEditor: MechPiModalPromptEditor | null = null;
 let activeVoice: VoiceInputController | null = null;
+const pendingVoicePromptFingerprints = new Set<string>();
+
+function voicePromptFingerprint(text: string): string {
+  return text.trim().replace(/\s+/g, " ");
+}
+
+function markVoicePromptForCleanup(text: string): void {
+  const fp = voicePromptFingerprint(text);
+  if (fp) pendingVoicePromptFingerprints.add(fp);
+}
+
+function consumeVoicePromptForCleanup(text: string): boolean {
+  const fp = voicePromptFingerprint(text);
+  if (!fp || !pendingVoicePromptFingerprints.has(fp)) return false;
+  pendingVoicePromptFingerprints.delete(fp);
+  return true;
+}
+
+function voiceCleanupPrompt(text: string): string {
+  return `The following user prompt was generated using realtime voice transcription, so it may contain homophones, missing punctuation, dropped words, or incorrect technical terms. First reinterpret and clean up the prompt internally before acting. If the intended request is materially ambiguous, ask a concise clarifying question instead of guessing. Otherwise, proceed directly with the cleaned-up request.\n\nDictated prompt:\n${text}`;
+}
 
 export default function mechPi(pi: ExtensionAPI) {
   installAssistantLatexPreviewRenderer();
