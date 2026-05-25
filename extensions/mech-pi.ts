@@ -2954,6 +2954,7 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
   private voiceDictationBaseText = "";
   private voiceDictationCursor = 0;
   private voiceUsedForCurrentPrompt = false;
+  private voiceRewriteSeq = 0;
 
   constructor(tui: TUI, theme: any, keybindings: any, promptHistoryFile?: string, initialHistory: string[] = []) {
     super(tui, theme, keybindings);
