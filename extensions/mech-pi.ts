@@ -3308,7 +3308,9 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
 
   protected override handleCtrlAPrefixCommand(ch: string | undefined, data: string): boolean {
     if (super.handleCtrlAPrefixCommand(ch, data)) return true;
-    const command = ch === "c" ? "/mechpane new" : ch === "n" ? "/mechpane next" : ch === "p" ? "/mechpane prev" : /^[1-9]$/.test(ch ?? "") ? `/mechpane ${ch}` : "";
+    const command = mechPaneShortcutCommandPrefix === "pi-pane"
+      ? ch === "c" ? "/pi-pane-new" : ch === "n" ? "/pi-pane-next" : ch === "p" ? "/pi-pane-prev" : /^[1-9]$/.test(ch ?? "") ? `/pi-pane-select ${ch}` : ""
+      : ch === "c" ? "/mechpane new" : ch === "n" ? "/mechpane next" : ch === "p" ? "/mechpane prev" : /^[1-9]$/.test(ch ?? "") ? `/mechpane ${ch}` : "";
     if (!command) return false;
     this.status = `PREFIX ${ch}`;
     this.enterInsert();
@@ -7560,6 +7562,8 @@ export default function mechPi(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     refreshMechPiRcConfig(ctx.cwd);
+    const commandNames = new Set(pi.getCommands().map(command => command.name));
+    mechPaneShortcutCommandPrefix = commandNames.has("pi-pane-select") && commandNames.has("pi-pane-new") ? "pi-pane" : "mechpane";
     mechPaneState(ctx.cwd);
     rememberMechPaneSession(ctx.cwd, ctx.sessionManager.getSessionFile());
     latexPreviewCwd = ctx.cwd;
