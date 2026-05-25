@@ -160,6 +160,8 @@ Future prompts in the same project can call the `mech_retrieve` tool to embed a 
 
 Automatic retrieval injection is off by default so retrieved chunks are not sent with every API request. Set `MECHPI_AUTO_RAG=1` or `MECHPI_AUTO_RETRIEVE=1` to restore automatic per-prompt retrieval into `MECH-PI INGESTED REFERENCE CONTEXT`.
 
+To start a clean session that ignores the local ingest store from inside pi, run `/new --no-mech-rag`. The new session records a session-local flag, suppresses automatic retrieval and vector-store guidance, and removes `mech_retrieve` from active tools. Use `/mechrag status`, `/mechrag off`, or `/mechrag on` to inspect or change this mode for the current session. From the shell, `pi --no-mech-rag` applies the same mode at startup.
+
 The command also creates or updates a local `AGENTS.md` block instructing future agents to use `mech_retrieve` for the vector-store RAG context before broad filesystem searches. Running `/mechingest` again lets you add or unselect items and rebuilds the store.
 
 Example:
@@ -259,6 +261,7 @@ Opens the compiled PDF.
 - `MECHPI_COMMIT_MODEL` — model used for generated git commit messages; defaults to `MECHPI_MINI_MODEL` then `openai/gpt-4o-mini`.
 - `MECHPI_MINI_MODEL` — fallback fast model for commit messages and other small tasks; defaults to `openai/gpt-4o-mini`.
 - `MECHPI_AUTO_RAG=1` / `MECHPI_AUTO_RETRIEVE=1` — opt in to automatic per-prompt retrieval injection from `.mechpi/ingest/vector-store.json`; off by default so retrieval normally happens only when `mech_retrieve` is called.
+- `MECHPI_NO_RAG=1` / `MECHPI_DISABLE_RAG=1` / `MECHPI_RAG=0` — fully disable mech-pi local ingest-store retrieval for the session, matching `/new --no-mech-rag` behavior for startup sessions.
 - `BROWSER` — browser command for the Google Scholar manual fallback and `/mechaddcite` web fallback when no PDF can be downloaded; defaults to `xdg-open`.
 - `MECHPI_PROMPT_HISTORY_LIMIT` — number of persistent prompts to keep in `.mechpi/prompt-history.json`; defaults to 100.
 - `MECHPI_PREVIEW_MAX_QUALITY=1` — experimental maximum-quality preview mode. It raises inline LaTeX DPI to 2400 and makes equation-editor adaptive rendering target much larger rasters. This is slower and can create large terminal image payloads, but is useful for comparing sharpness.
