@@ -94,8 +94,16 @@ function mechRagDisabled(ctx: Pick<ExtensionContext, "sessionManager">, cliFlag 
   return cliFlag || envDisablesMechRag() || sessionDisablesMechRag(ctx);
 }
 
+function mechRagModeData(enabled: boolean, source: string): Record<string, unknown> {
+  return { enabled, mode: enabled ? "on" : "off", source, createdAt: new Date().toISOString() };
+}
+
 function appendMechRagMode(sm: { appendCustomEntry: (customType: string, data: unknown) => unknown }, enabled: boolean, source: string): void {
-  sm.appendCustomEntry(MECH_RAG_SESSION_ENTRY, { enabled, mode: enabled ? "on" : "off", source, createdAt: new Date().toISOString() });
+  sm.appendCustomEntry(MECH_RAG_SESSION_ENTRY, mechRagModeData(enabled, source));
+}
+
+function appendCurrentMechRagMode(pi: ExtensionAPI, enabled: boolean, source: string): void {
+  pi.appendEntry(MECH_RAG_SESSION_ENTRY, mechRagModeData(enabled, source));
 }
 
 function disableMechRetrieveTool(pi: ExtensionAPI): void {
@@ -7603,13 +7611,13 @@ export default function mechPi(pi: ExtensionAPI) {
         return;
       }
       if (cmd === "off" || cmd === "disable" || cmd === "disabled") {
-        appendMechRagMode(ctx.sessionManager, false, "/mechrag off");
+        appendCurrentMechRagMode(pi, false, "/mechrag off");
         disableMechRetrieveTool(pi);
         ctx.ui.notify("Mech-pi RAG disabled for this session.", "info");
         return;
       }
       if (cmd === "on" || cmd === "enable" || cmd === "enabled") {
-        appendMechRagMode(ctx.sessionManager, true, "/mechrag on");
+        appendCurrentMechRagMode(pi, true, "/mechrag on");
         enableMechRetrieveTool(pi);
         ctx.ui.notify("Mech-pi RAG enabled for this session.", "info");
         return;
