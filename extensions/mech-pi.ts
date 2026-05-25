@@ -7374,10 +7374,10 @@ async function handleMechPaneCommand(args: string, ctx: ExtensionCommandContext)
     const defaultRag = mechPaneDefaultRagEnabled(ctx.cwd);
     const result = await ctx.newSession({
       parentSession,
-      setup: async (sm) => { appendMechRagMode(sm, defaultRag, defaultRag ? "/mechingest on (pane default)" : "/mechingest off (pane default)"); },
+      setup: async (sm) => { appendMechRagMode(sm, defaultRag, defaultRag ? "/mechrag on (pane default)" : "/mechrag off (pane default)"); },
       withSession: async (nextCtx) => {
         rememberMechPaneSession(nextCtx.cwd, nextCtx.sessionManager.getSessionFile());
-        nextCtx.ui.notify(`Created ${mechPaneLabel(nextCtx.cwd)} with /mechingest ${defaultRag ? "on" : "off"} (Ctrl-a n/p switches panes; Ctrl-a 1..9 jumps directly)`, "info");
+        nextCtx.ui.notify(`Created ${mechPaneLabel(nextCtx.cwd)} with /mechrag ${defaultRag ? "on" : "off"} (Ctrl-a n/p switches panes; Ctrl-a 1..9 jumps directly)`, "info");
       },
     });
     if (result.cancelled) ctx.ui.notify("New pane cancelled", "info");
@@ -7398,23 +7398,23 @@ async function handleMechPaneCommand(args: string, ctx: ExtensionCommandContext)
   ctx.ui.notify("Usage: /mechpane [new|next|prev|status|<number>]", "warning");
 }
 
-function handleMechIngestModeCommand(pi: ExtensionAPI, args: string, ctx: ExtensionCommandContext): boolean {
+function handleMechRagModeCommand(pi: ExtensionAPI, args: string, ctx: ExtensionCommandContext): boolean {
   const cmd = args.trim().toLowerCase();
   if (!cmd || !["status", "on", "off", "toggle", "enable", "enabled", "disable", "disabled"].includes(cmd)) return false;
   const vectorStore = fss.existsSync(mechIngestStorePath(ctx.cwd));
   const currentlyDisabled = mechRagDisabled(ctx, Boolean(pi.getFlag("no-mech-rag")));
   if (cmd === "status") {
     const paneDefault = mechPaneDefaultRagEnabled(ctx.cwd) ? "on" : "off";
-    ctx.ui.notify(`Mech-pi ingest retrieval is ${currentlyDisabled ? "off" : "on"} for this session. New-pane default: ${paneDefault}. Vector store: ${vectorStore ? "found" : "missing"}.`, currentlyDisabled ? "warning" : "info");
+    ctx.ui.notify(`Mech-pi RAG is ${currentlyDisabled ? "off" : "on"} for this session. New-pane default: ${paneDefault}. Vector store: ${vectorStore ? "found" : "missing"}.`, currentlyDisabled ? "warning" : "info");
     return true;
   }
   const enable = cmd === "toggle" ? currentlyDisabled : cmd === "on" || cmd === "enable" || cmd === "enabled";
   setMechPaneDefaultRag(ctx.cwd, enable);
-  appendCurrentMechRagMode(pi, enable, `/mechingest ${enable ? "on" : "off"}`);
+  appendCurrentMechRagMode(pi, enable, `/mechrag ${enable ? "on" : "off"}`);
   if (enable) enableMechRetrieveTool(pi);
   else disableMechRetrieveTool(pi);
   const missing = enable && !vectorStore ? " No vector store exists yet; run /mechingest <keywords> to build one." : "";
-  ctx.ui.notify(`Mech-pi ingest retrieval ${enable ? "enabled" : "disabled"} for this session and future new panes.${missing}`, enable && !vectorStore ? "warning" : "info");
+  ctx.ui.notify(`Mech-pi RAG ${enable ? "enabled" : "disabled"} for this session and future new panes.${missing}`, enable && !vectorStore ? "warning" : "info");
   return true;
 }
 
@@ -7502,15 +7502,11 @@ export default function mechPi(pi: ExtensionAPI) {
           const items = equationAutocompleteItems(await getEquationItems(), query);
           return items.length ? { items, prefix: before } : null;
         }
-        const ingestMatch = before.match(/^\/mechingest(?:\s+(.*))?$/);
+          const ingestMatch = before.match(/^\/mechingest(?:\s+(.*))?$/);
         if (ingestMatch) {
           const query = ingestMatch[1] ?? "";
-          const modeItems = ["status", "on", "off", "toggle"]
-            .filter(mode => !query.trim() || mode.startsWith(query.trim().toLowerCase()))
-            .map(mode => ({ value: `/mechingest ${mode}`, label: mode, description: "[mode] toggle local ingest retrieval" }));
-          if (!query.trim()) return { items: modeItems, prefix: before };
-          const ingestItems = mechIngestAutocompleteItems(await getMechIngestItems(), query);
-          const items = [...modeItems, ...ingestItems].slice(0, 12);
+          if (!query.trim()) return null;
+          const items = mechIngestAutocompleteItems(await getMechIngestItems(), query);
           return items.length ? { items, prefix: before } : null;
         }
         if (before.startsWith("/") && !before.includes(" ")) {
@@ -7824,9 +7820,9 @@ export default function mechPi(pi: ExtensionAPI) {
     handler: handleMechPaneCommand,
   });
   pi.registerCommand("mechrag", {
-    description: "Alias for /mechingest status|on|off|toggle.",
+    description: "Show or change mech-pi local ingest-store retrieval for this session. Usage: /mechrag [status|on|off]",
     handler: async (args, ctx) => {
-      if (!handleMechIngestModeCommand(pi, args.trim() || "status", ctx)) ctx.ui.notify("Usage: /mechrag [status|on|off|toggle]", "warning");
+      if (!handleMechRagModeCommand(pi, args.trim() || "status", ctx)) ctx.ui.notify("Usage: /mechrag [status|on|off]", "warning");
     }
   });
   pi.registerCommand("mechaddcite", {
@@ -7838,9 +7834,8 @@ export default function mechPi(pi: ExtensionAPI) {
     handler: async (args, ctx) => { await runMechGotoCite(args, ctx); }
   });
   pi.registerCommand("mechingest", {
-    description: "Toggle local ingest retrieval or build .mechpi/ingest vector context. Usage: /mechingest [status|on|off|toggle|<keywords>]",
+    description: "Select local files or BibTeX references, extract/chunk them, and build .mechpi/ingest vector context. Usage: /mechingest <keywords>",
     handler: async (args, ctx) => {
-      if (handleMechIngestModeCommand(pi, args, ctx)) return;
       const rebuilt = await runMechIngest(args, ctx);
       if (rebuilt) {
         appendCurrentMechRagMode(pi, true, "/mechingest rebuild");
