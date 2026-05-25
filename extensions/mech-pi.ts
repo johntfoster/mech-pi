@@ -71,6 +71,40 @@ function mechRuntimeEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return { ...process.env, ...mechPiRcConfig, ...(extra ?? {}) };
 }
 
+const MECH_RAG_SESSION_ENTRY = "mech-pi-rag";
+
+function envDisablesMechRag(): boolean {
+  if (/^(1|true|yes|on)$/i.test(mechEnv("MECHPI_NO_RAG") ?? mechEnv("MECHPI_DISABLE_RAG") ?? "")) return true;
+  if (/^(0|false|off|no)$/i.test(mechEnv("MECHPI_RAG") ?? "")) return true;
+  return false;
+}
+
+function sessionDisablesMechRag(ctx: Pick<ExtensionContext, "sessionManager">): boolean {
+  let disabled = false;
+  for (const entry of ctx.sessionManager.getEntries()) {
+    if (entry.type !== "custom" || entry.customType !== MECH_RAG_SESSION_ENTRY) continue;
+    const data = (entry as { data?: Record<string, unknown> }).data ?? {};
+    if (data.enabled === false || data.disabled === true || data.mode === "off") disabled = true;
+    if (data.enabled === true || data.disabled === false || data.mode === "on") disabled = false;
+  }
+  return disabled;
+}
+
+function mechRagDisabled(ctx: Pick<ExtensionContext, "sessionManager">, cliFlag = false): boolean {
+  return cliFlag || envDisablesMechRag() || sessionDisablesMechRag(ctx);
+}
+
+function appendMechRagMode(sm: { appendCustomEntry: (customType: string, data: unknown) => unknown }, enabled: boolean, source: string): void {
+  sm.appendCustomEntry(MECH_RAG_SESSION_ENTRY, { enabled, mode: enabled ? "on" : "off", source, createdAt: new Date().toISOString() });
+}
+
+function disableMechRetrieveTool(pi: ExtensionAPI): void {
+  try {
+    const active = pi.getActiveTools();
+    if (active.includes("mech_retrieve")) pi.setActiveTools(active.filter(name => name !== "mech_retrieve"));
+  } catch {}
+}
+
 interface EquationNumberInfo {
   label?: string;
   number: string;
