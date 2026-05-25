@@ -73,6 +73,41 @@ function mechRuntimeEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 const MECH_RAG_SESSION_ENTRY = "mech-pi-rag";
 
+let mechPaneSessions: string[] = [];
+let mechPaneActiveIndex = -1;
+
+function rememberMechPaneSession(sessionFile?: string | null): void {
+  if (!sessionFile) return;
+  const normalized = path.resolve(sessionFile);
+  mechPaneSessions = mechPaneSessions.filter(file => file !== normalized && fss.existsSync(file));
+  mechPaneSessions.push(normalized);
+  mechPaneActiveIndex = mechPaneSessions.length - 1;
+}
+
+function availableMechPaneSessions(): string[] {
+  mechPaneSessions = mechPaneSessions.filter(file => fss.existsSync(file));
+  if (mechPaneActiveIndex >= mechPaneSessions.length) mechPaneActiveIndex = mechPaneSessions.length - 1;
+  if (mechPaneSessions.length === 0) mechPaneActiveIndex = -1;
+  return mechPaneSessions;
+}
+
+function nextMechPaneSession(currentFile: string | undefined | null, delta: 1 | -1): string | null {
+  rememberMechPaneSession(currentFile);
+  const sessions = availableMechPaneSessions();
+  if (sessions.length < 2) return null;
+  const current = currentFile ? path.resolve(currentFile) : sessions[mechPaneActiveIndex] ?? sessions[0];
+  const currentIndex = Math.max(0, sessions.indexOf(current));
+  const nextIndex = (currentIndex + delta + sessions.length) % sessions.length;
+  mechPaneActiveIndex = nextIndex;
+  return sessions[nextIndex] ?? null;
+}
+
+function mechPaneLabel(): string {
+  const sessions = availableMechPaneSessions();
+  if (!sessions.length) return "pane 0/0";
+  return `pane ${Math.max(0, mechPaneActiveIndex) + 1}/${sessions.length}`;
+}
+
 function envDisablesMechRag(): boolean {
   if (/^(1|true|yes|on)$/i.test(mechEnv("MECHPI_NO_RAG") ?? mechEnv("MECHPI_DISABLE_RAG") ?? "")) return true;
   if (/^(0|false|off|no)$/i.test(mechEnv("MECHPI_RAG") ?? "")) return true;
