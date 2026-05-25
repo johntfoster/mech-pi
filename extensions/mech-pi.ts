@@ -73,52 +73,83 @@ function mechRuntimeEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 const MECH_RAG_SESSION_ENTRY = "mech-pi-rag";
 
-let mechPaneSessions: string[] = [];
-let mechPaneActiveIndex = -1;
+type MechPaneState = { sessions: string[]; activeIndex: number; defaultRagEnabled?: boolean };
 
-function rememberMechPaneSession(sessionFile?: string | null): void {
+const globalMechPaneGroups: Map<string, MechPaneState> = (() => {
+  const g = globalThis as typeof globalThis & { __mechPiPaneGroups?: Map<string, MechPaneState> };
+  if (!g.__mechPiPaneGroups) g.__mechPiPaneGroups = new Map<string, MechPaneState>();
+  return g.__mechPiPaneGroups;
+})();
+
+function mechPaneGroupKey(cwd: string): string { return path.resolve(cwd); }
+
+function mechPaneState(cwd: string): MechPaneState {
+  const key = mechPaneGroupKey(cwd);
+  let state = globalMechPaneGroups.get(key);
+  if (!state) {
+    state = { sessions: [], activeIndex: -1, defaultRagEnabled: fss.existsSync(mechIngestStorePath(key)) };
+    globalMechPaneGroups.set(key, state);
+  }
+  return state;
+}
+
+function mechPaneDefaultRagEnabled(cwd: string): boolean {
+  return mechPaneState(cwd).defaultRagEnabled === true;
+}
+
+function setMechPaneDefaultRag(cwd: string, enabled: boolean): void {
+  mechPaneState(cwd).defaultRagEnabled = enabled;
+}
+
+function rememberMechPaneSession(cwd: string, sessionFile?: string | null): void {
   if (!sessionFile) return;
+  const state = mechPaneState(cwd);
   const normalized = path.resolve(sessionFile);
-  mechPaneSessions = mechPaneSessions.filter(file => fss.existsSync(file));
-  const existingIndex = mechPaneSessions.indexOf(normalized);
+  state.sessions = state.sessions.filter(file => fss.existsSync(file));
+  const existingIndex = state.sessions.indexOf(normalized);
   if (existingIndex >= 0) {
-    mechPaneActiveIndex = existingIndex;
+    state.activeIndex = existingIndex;
     return;
   }
-  mechPaneSessions.push(normalized);
-  mechPaneActiveIndex = mechPaneSessions.length - 1;
+  state.sessions.push(normalized);
+  state.activeIndex = state.sessions.length - 1;
 }
 
-function availableMechPaneSessions(): string[] {
-  mechPaneSessions = mechPaneSessions.filter(file => fss.existsSync(file));
-  if (mechPaneActiveIndex >= mechPaneSessions.length) mechPaneActiveIndex = mechPaneSessions.length - 1;
-  if (mechPaneSessions.length === 0) mechPaneActiveIndex = -1;
-  return mechPaneSessions;
+function availableMechPaneSessions(cwd: string): string[] {
+  const state = mechPaneState(cwd);
+  state.sessions = state.sessions.filter(file => fss.existsSync(file));
+  if (state.activeIndex >= state.sessions.length) state.activeIndex = state.sessions.length - 1;
+  if (state.sessions.length === 0) state.activeIndex = -1;
+  return state.sessions;
 }
 
-function nextMechPaneSession(currentFile: string | undefined | null, delta: 1 | -1): string | null {
-  rememberMechPaneSession(currentFile);
-  const sessions = availableMechPaneSessions();
+function mechPaneActiveIndex(cwd: string): number { return mechPaneState(cwd).activeIndex; }
+
+function nextMechPaneSession(cwd: string, currentFile: string | undefined | null, delta: 1 | -1): string | null {
+  rememberMechPaneSession(cwd, currentFile);
+  const state = mechPaneState(cwd);
+  const sessions = availableMechPaneSessions(cwd);
   if (sessions.length < 2) return null;
-  const current = currentFile ? path.resolve(currentFile) : sessions[mechPaneActiveIndex] ?? sessions[0];
+  const current = currentFile ? path.resolve(currentFile) : sessions[state.activeIndex] ?? sessions[0];
   const currentIndex = Math.max(0, sessions.indexOf(current));
   const nextIndex = (currentIndex + delta + sessions.length) % sessions.length;
-  mechPaneActiveIndex = nextIndex;
+  state.activeIndex = nextIndex;
   return sessions[nextIndex] ?? null;
 }
 
-function numberedMechPaneSession(currentFile: string | undefined | null, paneNumber: number): string | null {
-  rememberMechPaneSession(currentFile);
-  const sessions = availableMechPaneSessions();
+function numberedMechPaneSession(cwd: string, currentFile: string | undefined | null, paneNumber: number): string | null {
+  rememberMechPaneSession(cwd, currentFile);
+  const state = mechPaneState(cwd);
+  const sessions = availableMechPaneSessions(cwd);
   if (!Number.isInteger(paneNumber) || paneNumber < 1 || paneNumber > sessions.length) return null;
-  mechPaneActiveIndex = paneNumber - 1;
-  return sessions[mechPaneActiveIndex] ?? null;
+  state.activeIndex = paneNumber - 1;
+  return sessions[state.activeIndex] ?? null;
 }
 
-function mechPaneLabel(): string {
-  const sessions = availableMechPaneSessions();
+function mechPaneLabel(cwd: string): string {
+  const sessions = availableMechPaneSessions(cwd);
   if (!sessions.length) return "pane 0/0";
-  return `pane ${Math.max(0, mechPaneActiveIndex) + 1}/${sessions.length}`;
+  return `pane ${Math.max(0, mechPaneActiveIndex(cwd)) + 1}/${sessions.length}`;
 }
 
 function envDisablesMechRag(): boolean {
