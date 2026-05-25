@@ -6888,7 +6888,7 @@ class VoiceInputController {
     }
     activePromptEditor?.endVoiceDictation(false, cancel);
     if (!cancel && activePromptEditor?.hasVoiceGeneratedPrompt()) {
-      void activePromptEditor.rewriteVoicePrompt(this.ctx, submit).catch(err => activePromptEditor?.insertVoiceText(``));
+      void activePromptEditor.rewriteVoicePrompt(this.ctx, submit);
     } else if (submit) {
       activePromptEditor?.endVoiceDictation(true, false);
     }
