@@ -6652,8 +6652,9 @@ class VoiceInputController {
     return parts.join("\n");
   }
 
-  async startRecording(reason = "manual"): Promise<void> {
-    if (this.recorder) return;
+  async startRecording(reason = "manual", options: { submitOnStop?: boolean } = {}): Promise<void> {
+    if (this.isRecording()) return;
+    if (voskRealtimeEnabled() && this.hasStreamingTranscriber()) return this.startStreamingVosk(reason, options);
     const spec = this.findRecorder();
     if (!spec) throw new Error("No Linux audio recorder found. Install sox, pulseaudio-utils, ffmpeg, or alsa-utils; or set MECHPI_RECORD_COMMAND.");
     if (!this.hasTranscriber()) throw new Error("No speech-to-text backend found. Set MECHPI_STT_COMMAND or MECHPI_WHISPER_CPP_MODEL, or install whisper/vosk-transcriber.");
@@ -6677,13 +6678,22 @@ class VoiceInputController {
   }
 
   stopAfter(ms: number): void {
-    if (!this.recorder) return;
+    if (!this.isRecording()) return;
     if (this.stopTimer) clearTimeout(this.stopTimer);
     this.stopTimer = setTimeout(() => this.stopNow(), Math.max(0, ms));
   }
 
-  stopNow(): void {
+  stopNow(options: { submit?: boolean; cancel?: boolean } = {}): void {
     if (this.stopTimer) { clearTimeout(this.stopTimer); this.stopTimer = null; }
+    if (this.streamRecorder || this.streamStt) {
+      if (options.submit !== undefined) this.streamSubmitOnStop = options.submit;
+      if (options.cancel) this.streamCancelled = true;
+      this.ctx.ui.setStatus("voice", this.ctx.ui.theme.fg("warning", "● voice stopping"));
+      this.streamRecorder?.kill("SIGINT");
+      setTimeout(() => this.streamRecorder?.kill("SIGTERM"), 500);
+      setTimeout(() => this.streamStt?.kill("SIGTERM"), 1200);
+      return;
+    }
     if (!this.recorder) return;
     this.ctx.ui.setStatus("voice", this.ctx.ui.theme.fg("warning", "● voice transcribing"));
     this.recorder.kill("SIGINT");
