@@ -75,7 +75,7 @@ See [docs/terminal-images.md](docs/terminal-images.md) for SSH, Kitty, and tmux 
 /mecheqedit eq:label     edit a focused equation block in-terminal
 /mecheqedit number:2.14  edit by rendered PDF equation number
 /mecheqedit contains:... edit the first equation containing a fragment
-/mechaddcite prompt      find/select citation(s), update .bib, optionally insert into TeX or keep local copy
+/mechaddcite prompt      find/select citation(s), summarize PDFs, update .bib, optionally insert into TeX
 /mechciteedit query      edit a local BibTeX entry with a rendered reference preview
 /mechgotocite query      fuzzy search local .bib entries and open the best paper website
 /mechingest keywords     select refs/files, extract text, and build a local retrieval store
@@ -120,6 +120,8 @@ compile, summarize errors, and fix the first LaTeX issue
 ask me skeptical mixture-theory questions about the mass transfer terms
 review section 3 like a thermodynamics referee
 ```
+
+In the citation picker, drilling into a candidate tries to download an accessible PDF to `/tmp`, extract text, and summarize it with a configurable mini model (`MECHPI_SUMMARY_MODEL`, falling back to `MECHPI_MINI_MODEL` or `openai/gpt-4o-mini`). When a selected citation is added, any downloaded PDF is moved into `MECHPI_REFERENCES_PATH`/`MECHPI_REFERENCE_PATH` (default `~/Documents/References`) and the BibTeX `file` field records the path.
 
 ## Manuscript and equation editing
 

@@ -3500,6 +3500,7 @@ type CitationCandidate = {
   doi?: string;
   arxivId?: string;
   url?: string;
+  pdfUrl?: string;
   abstract?: string;
   key?: string;
   bibtex?: string;
@@ -3508,6 +3509,8 @@ type CitationCandidate = {
   score: number;
   notes: string[];
   summary?: string;
+  tempPdfPath?: string;
+  referencePath?: string;
 };
 
 function normalizeSpace(s: string): string { return s.replace(/\s+/g, " ").trim(); }
@@ -3687,8 +3690,20 @@ async function reportPostCompileUntrackedRelevant(ctx: ExtensionContext, map: Pa
 }
 
 
+async function configuredMiniModel(ctx: ExtensionContext, envName: string): Promise<any | undefined> {
+  const spec = process.env[envName] ?? process.env.MECHPI_MINI_MODEL ?? "openai/gpt-4o-mini";
+  const sep = spec.includes("/") ? "/" : spec.includes(":") ? ":" : "";
+  if (sep) {
+    const [provider, ...rest] = spec.split(sep);
+    const id = rest.join(sep);
+    const found = (ctx.modelRegistry as any).find?.(provider, id);
+    if (found) return found;
+  }
+  return ctx.model;
+}
+
 async function commitMessageModel(ctx: ExtensionContext): Promise<any | undefined> {
-  const spec = process.env.MECHPI_COMMIT_MODEL ?? "openai/gpt-4o-mini";
+  const spec = process.env.MECHPI_COMMIT_MODEL ?? process.env.MECHPI_MINI_MODEL ?? "openai/gpt-4o-mini";
   const sep = spec.includes("/") ? "/" : spec.includes(":") ? ":" : "";
   if (sep) {
     const [provider, ...rest] = spec.split(sep);
@@ -4084,7 +4099,8 @@ function crossrefItemToCandidate(item: any, prompt: string): CitationCandidate |
   const year = String(item.published?.["date-parts"]?.[0]?.[0] ?? item.issued?.["date-parts"]?.[0]?.[0] ?? "") || undefined;
   const venue = item["container-title"]?.[0] ?? item.publisher;
   const doi = normalizeDoi(item.DOI);
-  const c: CitationCandidate = { id: `crossref:${doi ?? title}`, title, authors, year, venue, doi, url: item.URL, source: "Crossref", status: doi ? "verified" : "partial", score: 0.7 + tokenScore(prompt, [title, authors.join(" "), year, venue].filter(Boolean).join(" ")), notes: doi ? ["DOI present in Crossref metadata"] : ["Crossref result lacks DOI"] };
+  const pdfUrl = (item.link ?? []).find((l: any) => String(l?.["content-type"] ?? "").includes("pdf") && l?.URL)?.URL;
+  const c: CitationCandidate = { id: `crossref:${doi ?? title}`, title, authors, year, venue, doi, url: item.URL, pdfUrl, source: "Crossref", status: doi ? "verified" : "partial", score: 0.7 + tokenScore(prompt, [title, authors.join(" "), year, venue].filter(Boolean).join(" ")), notes: doi ? ["DOI present in Crossref metadata"] : ["Crossref result lacks DOI"] };
   return c;
 }
 
@@ -4094,7 +4110,8 @@ function openAlexItemToCandidate(item: any, prompt: string): CitationCandidate |
   const authors = (item.authorships ?? []).map((a: any) => a.author?.display_name).filter(Boolean);
   const doi = normalizeDoi(item.doi);
   const venue = item.primary_location?.source?.display_name ?? item.host_venue?.display_name;
-  const c: CitationCandidate = { id: `openalex:${item.id ?? doi ?? title}`, title, authors, year: item.publication_year ? String(item.publication_year) : undefined, venue, doi, url: item.primary_location?.landing_page_url ?? item.id, source: "OpenAlex", status: doi ? "verified" : "partial", score: 0.65 + tokenScore(prompt, [title, authors.join(" "), venue, item.publication_year].filter(Boolean).join(" ")), notes: doi ? ["DOI present in OpenAlex metadata"] : ["OpenAlex result lacks DOI"] };
+  const pdfUrl = item.primary_location?.pdf_url ?? item.best_oa_location?.pdf_url;
+  const c: CitationCandidate = { id: `openalex:${item.id ?? doi ?? title}`, title, authors, year: item.publication_year ? String(item.publication_year) : undefined, venue, doi, url: item.primary_location?.landing_page_url ?? item.id, pdfUrl, source: "OpenAlex", status: doi ? "verified" : "partial", score: 0.65 + tokenScore(prompt, [title, authors.join(" "), venue, item.publication_year].filter(Boolean).join(" ")), notes: doi ? ["DOI present in OpenAlex metadata"] : ["OpenAlex result lacks DOI"] };
   return c;
 }
 
@@ -4104,7 +4121,7 @@ function semanticItemToCandidate(item: any, prompt: string): CitationCandidate |
   const doi = normalizeDoi(item.externalIds?.DOI);
   const arxivId = item.externalIds?.ArXiv;
   const authors = (item.authors ?? []).map((a: any) => a.name).filter(Boolean);
-  return { id: `semantic:${item.paperId ?? doi ?? title}`, title, authors, year: item.year ? String(item.year) : undefined, venue: item.venue, doi, arxivId, url: item.url, abstract: item.abstract, source: "Semantic Scholar", status: doi || arxivId ? "verified" : "partial", score: 0.65 + tokenScore(prompt, [title, authors.join(" "), item.venue, item.abstract].filter(Boolean).join(" ")), notes: doi ? ["DOI present in Semantic Scholar metadata"] : arxivId ? ["arXiv id present in Semantic Scholar metadata"] : ["Semantic Scholar result lacks DOI/arXiv id"] };
+  return { id: `semantic:${item.paperId ?? doi ?? title}`, title, authors, year: item.year ? String(item.year) : undefined, venue: item.venue, doi, arxivId, url: item.url, pdfUrl: item.openAccessPdf?.url, abstract: item.abstract, source: "Semantic Scholar", status: doi || arxivId ? "verified" : "partial", score: 0.65 + tokenScore(prompt, [title, authors.join(" "), item.venue, item.abstract].filter(Boolean).join(" ")), notes: doi ? ["DOI present in Semantic Scholar metadata"] : arxivId ? ["arXiv id present in Semantic Scholar metadata"] : ["Semantic Scholar result lacks DOI/arXiv id"] };
 }
 
 function arxivEntryToCandidate(entryXml: string, prompt: string): CitationCandidate | null {
@@ -4116,7 +4133,7 @@ function arxivEntryToCandidate(entryXml: string, prompt: string): CitationCandid
   const arxivId = url.split("/").pop()?.replace(/v\d+$/, "");
   const year = get("published").match(/\d{4}/)?.[0];
   const abstract = normalizeSpace(get("summary"));
-  return { id: `arxiv:${arxivId ?? title}`, title, authors, year, arxivId, url, abstract, source: "arXiv", status: arxivId ? "verified" : "partial", score: 0.55 + tokenScore(prompt, [title, authors.join(" "), abstract].join(" ")), notes: arxivId ? ["arXiv API record"] : ["arXiv result lacks id"] };
+  return { id: `arxiv:${arxivId ?? title}`, title, authors, year, arxivId, url, pdfUrl: arxivId ? `https://arxiv.org/pdf/${encodeURIComponent(arxivId)}.pdf` : undefined, abstract, source: "arXiv", status: arxivId ? "verified" : "partial", score: 0.55 + tokenScore(prompt, [title, authors.join(" "), abstract].join(" ")), notes: arxivId ? ["arXiv API record"] : ["arXiv result lacks id"] };
 }
 
 function normalizeCitationQueryText(s: string): string {
@@ -4158,7 +4175,7 @@ async function searchExternalCitations(prompt: string, signal?: AbortSignal): Pr
     const [crossref, openalex, semantic, arxivXml] = await Promise.all([
       fetchJson(`https://api.crossref.org/works?rows=5&query.bibliographic=${q}`, signal),
       fetchJson(`https://api.openalex.org/works?per-page=5&search=${q}`, signal),
-      fetchJson(`https://api.semanticscholar.org/graph/v1/paper/search?limit=5&fields=title,authors,year,venue,abstract,externalIds,url&query=${q}`, signal),
+      fetchJson(`https://api.semanticscholar.org/graph/v1/paper/search?limit=5&fields=title,authors,year,venue,abstract,externalIds,url,openAccessPdf&query=${q}`, signal),
       fetchTextUrl(`https://export.arxiv.org/api/query?start=0&max_results=3&search_query=all:${q}`, signal),
     ]);
     for (const item of crossref?.message?.items ?? []) { const c = crossrefItemToCandidate(item, prompt); if (c) { c.notes.push(`Matched query: ${query}`); out.push(c); } }
@@ -4217,16 +4234,107 @@ async function hydrateCandidateBibtex(c: CitationCandidate, existingKeys: Set<st
   return { ...c, key, bibtex: `@${type}{${key},\n  title = {${latexEscapeBibValue(c.title)}},\n${author}${year}${venue}${doi}${eprint}${url}}`, notes: unique([...c.notes, c.doi ? "Constructed BibTeX from verified DOI metadata because DOI BibTeX was unavailable" : c.arxivId ? "Constructed BibTeX from arXiv metadata" : "Constructed BibTeX from partial metadata; confirmation required"]) };
 }
 
-async function generateCandidateSummary(ctx: ExtensionContext, c: CitationCandidate): Promise<string> {
-  const fallback = `${c.title}${c.year ? ` (${c.year})` : ""}${c.abstract ? `: ${c.abstract}` : ""}`.slice(0, 900);
-  if (!ctx.model) return fallback || "No model selected for summary generation.";
+
+function citationReferenceRoot(): string {
+  return path.resolve(expandUserPath(process.env.MECHPI_REFERENCES_PATH ?? process.env.MECHPI_REFERENCE_PATH ?? "~/Documents/References"));
+}
+
+function safePathPart(s: string, fallback = "untitled"): string {
+  const cleaned = normalizeSpace(s).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+  return cleaned || fallback;
+}
+
+function candidatePdfUrls(c: CitationCandidate): string[] {
+  const urls: string[] = [];
+  if (c.pdfUrl) urls.push(c.pdfUrl);
+  if (c.arxivId) urls.push(`https://arxiv.org/pdf/${encodeURIComponent(c.arxivId)}.pdf`);
+  if (c.url && /\.pdf(?:$|[?#])/i.test(c.url)) urls.push(c.url);
+  if (c.doi) urls.push(`https://doi.org/${encodeURI(c.doi)}`);
+  return unique(urls.filter(Boolean));
+}
+
+async function downloadPdfToTmp(ctx: ExtensionContext, c: CitationCandidate): Promise<string | null> {
+  if (c.tempPdfPath && fss.existsSync(c.tempPdfPath)) return c.tempPdfPath;
+  const tmpDir = path.join(process.env.TMPDIR ?? "/tmp", "mech-pi-citations");
+  await fs.mkdir(tmpDir, { recursive: true });
+  for (const url of candidatePdfUrls(c)) {
+    try {
+      const r = await fetch(url, { signal: ctx.signal, redirect: "follow", headers: { "User-Agent": "mech-pi citation helper", Accept: "application/pdf,application/octet-stream;q=0.9,*/*;q=0.2" } });
+      if (!r.ok) continue;
+      const buf = Buffer.from(await r.arrayBuffer());
+      const contentType = r.headers.get("content-type") ?? "";
+      if (!contentType.toLowerCase().includes("pdf") && buf.subarray(0, 5).toString() !== "%PDF-") continue;
+      const file = path.join(tmpDir, `${safePathPart(c.authors[0] ?? "ref")}-${c.year ?? "nd"}-${hashId(c.doi ?? c.arxivId ?? c.title)}.pdf`);
+      await fs.writeFile(file, buf);
+      c.tempPdfPath = file;
+      c.notes = unique([...c.notes, `Downloaded PDF to ${file}`]);
+      return file;
+    } catch {}
+  }
+  return null;
+}
+
+async function extractPdfTextPreview(cwd: string, pdfAbs: string): Promise<string> {
+  if (!commandExists("pdftotext")) return "";
+  const r = await run("pdftotext", ["-f", "1", "-l", "8", pdfAbs, "-"], cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
+  return r.code === 0 ? normalizeSpace(r.stdout).slice(0, 14000) : "";
+}
+
+async function fetchLandingPageText(c: CitationCandidate, signal?: AbortSignal): Promise<string> {
+  const url = bestCitationUrl(c);
+  if (!url) return "";
+  const html = await fetchTextUrl(url, signal, { Accept: "text/html,text/plain,*/*;q=0.2" }).catch(() => null);
+  if (!html) return "";
+  return normalizeSpace(decodeHtml(html.replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " "))).slice(0, 8000);
+}
+
+async function generateCitationSummaryWithMiniModel(ctx: ExtensionContext, c: CitationCandidate, sourceText: string, sourceLabel: string): Promise<string> {
+  const fallback = `${c.title}${c.year ? ` (${c.year})` : ""}${sourceText ? `: ${sourceText}` : c.abstract ? `: ${c.abstract}` : ""}`.slice(0, 900);
   try {
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+    const model = await configuredMiniModel(ctx, "MECHPI_SUMMARY_MODEL");
+    if (!model) return fallback || "No model selected for summary generation.";
+    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
     if (!auth.ok || !auth.apiKey) return fallback;
-    const msg: Message = { role: "user", timestamp: Date.now(), content: [{ type: "text", text: `Write one concise paragraph summarizing this paper for citation selection. Use only the metadata/abstract below; do not invent facts.\n\nTitle: ${c.title}\nAuthors: ${c.authors.join(", ")}\nYear: ${c.year ?? ""}\nVenue: ${c.venue ?? ""}\nDOI/arXiv: ${c.doi ?? c.arxivId ?? ""}\nAbstract/metadata: ${c.abstract ?? "No abstract available."}` }] };
-    const r = await complete(ctx.model, { systemPrompt: "You summarize citation candidates conservatively from supplied metadata only.", messages: [msg] }, { apiKey: auth.apiKey, headers: auth.headers, signal: ctx.signal });
+    const msg: Message = { role: "user", timestamp: Date.now(), content: [{ type: "text", text: `Write one concise paragraph summarizing this paper for citation selection. Use only supplied ${sourceLabel}; do not invent facts.\n\nTitle: ${c.title}\nAuthors: ${c.authors.join(", ")}\nYear: ${c.year ?? ""}\nVenue: ${c.venue ?? ""}\nDOI/arXiv: ${c.doi ?? c.arxivId ?? ""}\n\n${sourceLabel}:\n${sourceText || c.abstract || "No abstract/text available."}` }] };
+    const r = await complete(model, { systemPrompt: "You summarize citation candidates conservatively from supplied text only. Output one short paragraph.", messages: [msg] }, { apiKey: auth.apiKey, headers: auth.headers, signal: ctx.signal });
     return r.content.filter((x): x is { type: "text"; text: string } => x.type === "text").map(x => x.text).join("\n").trim() || fallback;
   } catch { return fallback; }
+}
+
+async function inspectCitationCandidate(ctx: ExtensionContext, c: CitationCandidate, openWebOnNoPdf = true): Promise<string> {
+  const pdf = await downloadPdfToTmp(ctx, c);
+  if (pdf) {
+    const text = await extractPdfTextPreview(ctx.cwd, pdf);
+    c.summary = await generateCitationSummaryWithMiniModel(ctx, c, text || c.abstract || "", text ? "PDF text from first pages" : "metadata/abstract");
+    return c.summary;
+  }
+  const url = bestCitationUrl(c);
+  if (openWebOnNoPdf && url) openUrlExternal(url);
+  const landing = await fetchLandingPageText(c, ctx.signal);
+  c.summary = await generateCitationSummaryWithMiniModel(ctx, c, landing || c.abstract || "", landing ? "landing-page text/metadata" : "metadata/abstract");
+  c.notes = unique([...c.notes, url ? "PDF could not be downloaded automatically; opened landing page for inspection" : "PDF could not be downloaded automatically"]);
+  return c.summary;
+}
+
+async function moveCandidatePdfToReferences(ctx: ExtensionContext, c: CitationCandidate, key: string): Promise<{ stored?: string; note?: string }> {
+  const pdf = c.tempPdfPath && fss.existsSync(c.tempPdfPath) ? c.tempPdfPath : await downloadPdfToTmp(ctx, c);
+  if (!pdf) return { note: "no downloadable PDF found" };
+  const root = citationReferenceRoot();
+  const year = c.year?.match(/\d{4}/)?.[0] ?? "undated";
+  const author = safePathPart(c.authors[0]?.split(/\s+/).slice(-1)[0] ?? "unknown");
+  const title = safePathPart(c.title, key);
+  const dir = path.join(root, year, author);
+  await fs.mkdir(dir, { recursive: true });
+  let dest = path.join(dir, `${key}-${title}.pdf`);
+  if (dest.length > 240) dest = path.join(dir, `${key}-${hashId(c.title)}.pdf`);
+  if (!fss.existsSync(dest)) await fs.rename(pdf, dest).catch(async () => { await fs.copyFile(pdf, dest); await fs.rm(pdf, { force: true }).catch(() => {}); });
+  c.referencePath = dest;
+  await autoCommitPaths(ctx, [dest], `Store reference PDF for ${key}`);
+  return { stored: dest, note: `stored PDF in references path ${dest}` };
+}
+
+async function generateCandidateSummary(ctx: ExtensionContext, c: CitationCandidate): Promise<string> {
+  return await inspectCitationCandidate(ctx, c, false);
 }
 
 function extractTargetStatement(prompt: string): string | null {
@@ -4329,7 +4437,7 @@ class CitationPicker {
   private detail = false;
   private loadingSummary = false;
   private checked = new Set<number>();
-  constructor(private tui: TUI, private theme: any, private candidates: CitationCandidate[], private summarize: (c: CitationCandidate) => Promise<string>, private done: (c: CitationCandidate[] | null) => void) {}
+  constructor(private tui: TUI, private theme: any, private candidates: CitationCandidate[], private summarize: (c: CitationCandidate, openWeb?: boolean) => Promise<string>, private done: (c: CitationCandidate[] | null) => void) {}
   render(width: number): string[] {
     const lines: string[] = [];
     lines.push(this.theme.fg("accent", "─".repeat(width)));
@@ -4339,7 +4447,7 @@ class CitationPicker {
       for (let i = 0; i < this.candidates.length; i++) lines.push(candidateLine(this.candidates[i], i === this.selected, this.checked.has(i), width, this.theme));
     } else {
       const c = this.candidates[this.selected];
-      lines.push(truncateToWidth(this.theme.fg("accent", this.theme.bold("Citation detail")) + this.theme.fg("dim", "  h back • l open web • space select • enter insert • q cancel"), width));
+      lines.push(truncateToWidth(this.theme.fg("accent", this.theme.bold("Citation detail")) + this.theme.fg("dim", "  h back • l inspect/download PDF or open web • space select • enter insert • q cancel"), width));
       lines.push(truncateToWidth(`${this.checked.has(this.selected) ? "✅ " : ""}${c.title}`, width));
       lines.push(truncateToWidth(`${c.authors.join(", ")}${c.year ? ` (${c.year})` : ""}`, width));
       lines.push(truncateToWidth(`${c.venue ?? ""}${c.doi ? ` DOI: ${c.doi}` : c.arxivId ? ` arXiv: ${c.arxivId}` : ""}`, width));
@@ -4369,8 +4477,11 @@ class CitationPicker {
     if (this.detail) {
       if (ch === "h" || matchesKey(data, Key.left)) { this.detail = false; this.tui.requestRender(); return; }
       if (ch === "l" || matchesKey(data, Key.right)) {
-        const url = bestCitationUrl(this.candidates[this.selected]);
-        if (url) openUrlExternal(url);
+        const c = this.candidates[this.selected];
+        if (!this.loadingSummary) {
+          this.loadingSummary = true;
+          this.summarize(c, true).then(s => { c.summary = s; }).finally(() => { this.loadingSummary = false; this.tui.requestRender(); });
+        }
         return;
       }
       return;
@@ -4382,7 +4493,7 @@ class CitationPicker {
       const c = this.candidates[this.selected];
       if (!c.summary && !this.loadingSummary) {
         this.loadingSummary = true;
-        this.summarize(c).then(s => { c.summary = s; }).finally(() => { this.loadingSummary = false; this.tui.requestRender(); });
+        this.summarize(c, true).then(s => { c.summary = s; }).finally(() => { this.loadingSummary = false; this.tui.requestRender(); });
       }
     }
     this.tui.requestRender();
@@ -4403,7 +4514,7 @@ function wrapPlain(s: string, width: number): string[] {
 }
 
 async function chooseCitationCandidates(ctx: ExtensionContext, candidates: CitationCandidate[]): Promise<CitationCandidate[] | null> {
-  return await ctx.ui.custom<CitationCandidate[] | null>((tui, theme, _kb, done) => opaquePopup(new CitationPicker(tui, theme, candidates, c => generateCandidateSummary(ctx, c), done), theme), { overlay: true, overlayOptions: { width: "90%", maxHeight: "80%", anchor: "center" } });
+  return await ctx.ui.custom<CitationCandidate[] | null>((tui, theme, _kb, done) => opaquePopup(new CitationPicker(tui, theme, candidates, (c, openWeb) => inspectCitationCandidate(ctx, c, openWeb), done), theme), { overlay: true, overlayOptions: { width: "90%", maxHeight: "80%", anchor: "center" } });
 }
 
 async function handleGoogleScholarManual(ctx: ExtensionContext, prompt: string, existingKeys: Set<string>): Promise<CitationCandidate | null> {
@@ -4511,7 +4622,7 @@ async function updateExistingBibEntryField(ctx: ExtensionContext, bibRel: string
   return true;
 }
 
-type PreparedCitation = { candidate: CitationCandidate; key: string; bibtex: string; existed: boolean; highMetadata: boolean; keepStored?: string; keepNote?: string };
+type PreparedCitation = { candidate: CitationCandidate; key: string; bibtex: string; existed: boolean; highMetadata: boolean; keepStored?: string; keepNote?: string; referenceStored?: string; referenceNote?: string };
 
 async function prepareCitationForInsertion(candidate: CitationCandidate, entries: BibEntry[], existingKeys: Set<string>, signal?: AbortSignal): Promise<PreparedCitation> {
   let c = await hydrateCandidateBibtex(candidate, existingKeys, signal);
@@ -4534,8 +4645,14 @@ async function insertCitationCandidates(ctx: ExtensionContext, map: PaperMap, ca
   const existingKeys = new Set(entries.map(e => e.key));
   const prepared: PreparedCitation[] = [];
   for (const candidate of candidates) prepared.push(await prepareCitationForInsertion(candidate, entries, existingKeys, ctx.signal));
+  for (const p of prepared) {
+    const moved = await moveCandidatePdfToReferences(ctx, p.candidate, p.key);
+    p.referenceStored = moved.stored;
+    p.referenceNote = moved.note;
+    if (moved.stored) p.bibtex = addBibFieldToEntryRaw(p.bibtex, "file", moved.stored);
+  }
   if (options.keepLocal) {
-    for (const p of prepared) {
+    for (const p of prepared.filter(p => !p.referenceStored)) {
       const kept = await keepLocalCitationDocument(ctx, p.candidate, p.key);
       p.keepStored = kept.stored;
       p.keepNote = kept.note;
@@ -4561,12 +4678,11 @@ async function insertCitationCandidates(ctx: ExtensionContext, map: PaperMap, ca
     await autoCommitPaths(ctx, [bibAbs], `Add BibTeX citation(s) to ${bibRel}`);
   }
 
-  if (options.keepLocal) {
-    for (const p of prepared.filter(p => p.existed && p.keepStored)) await updateExistingBibEntryField(ctx, bibRel, p.key, "file", p.keepStored!);
-  }
+  for (const p of prepared.filter(p => p.existed && (p.referenceStored || p.keepStored))) await updateExistingBibEntryField(ctx, bibRel, p.key, "file", (p.referenceStored ?? p.keepStored)!);
 
   const keys = prepared.map(p => p.key);
-  const keepNote = options.keepLocal ? ` Keep-local: ${prepared.map(p => `${p.key}: ${p.keepStored ?? p.keepNote ?? "not found"}`).join("; ")}.` : "";
+  const referenceNote = ` References: ${prepared.map(p => `${p.key}: ${p.referenceStored ?? p.referenceNote ?? p.keepStored ?? p.keepNote ?? "not found"}`).join("; ")}.`;
+  const keepNote = options.keepLocal ? ` Keep-local: ${prepared.map(p => `${p.key}: ${p.keepStored ?? p.keepNote ?? p.referenceStored ?? p.referenceNote ?? "not found"}`).join("; ")}.` : referenceNote;
   if (options.toBibOnly) {
     await writeMap(ctx.cwd, await buildPaperMap(ctx.cwd));
     return `BibTeX ${toAppend.length ? "added" : "ready"} in ${bibRel} as ${keys.join(", ")}; TeX unchanged by --to-bib.${keepNote}`;

@@ -81,11 +81,11 @@ Behavior:
 - Searches Crossref, OpenAlex, Semantic Scholar, and arXiv when local entries are insufficient.
 - Adds a Google Scholar manual fallback row that opens Scholar in a browser and lets you paste BibTeX for validation.
 - Uses DOI content negotiation for authoritative BibTeX when possible.
-- `j`/`k` or arrows move the highlighted row, `Space` toggles multi-selection with a ✅ marker, first `l` opens a detail view with an LLM summary based only on fetched metadata/abstract, second `l` from the detail view opens the best web reference for the paper, `h` returns to the list, and `Enter` inserts the highlighted citation or all checked citations.
-- If multiple citations are checked, all selected entries are added to the `.bib` file when needed and inserted as one citation command at the source-grounded TeX location.
+- `j`/`k` or arrows move the highlighted row, `Space` toggles multi-selection with a ✅ marker, first `l` opens a detail view and tries to download an accessible PDF into `/tmp/mech-pi-citations/`, extract first-page text, and generate a fast mini-model summary. Pressing `l` again retries PDF inspection and opens the best web reference only when a PDF cannot be downloaded. `h` returns to the list, and `Enter` inserts the highlighted citation or all checked citations.
+- If multiple citations are checked, all selected entries are added to the `.bib` file when needed and inserted as one citation command at the source-grounded TeX location. Any downloaded PDF for a selected entry is moved from `/tmp` into the configured references tree, defaulting to `~/Documents/References/<year>/<author>/`, and the BibTeX `file = {...}` field is added/updated with that path.
 - Auto-inserts only when metadata and TeX location are high confidence; otherwise asks for confirmation. If no high-confidence TeX location can be determined, `mech-pi` adds/reuses the BibTeX entry and opens an external editor at the closest likely source location for manual citation placement.
 - `--to-bib` / `-b`: add/reuse selected citation(s) in the bibliography only; do not edit TeX.
-- `--keep-local` / `-l`: store a matching local paper from `$HOME` (symlinked into `.mechpi/ingest/sources/` when possible), or download DOI/URL content when possible, for later `/mechingest` use. When a stored document is found, `mech-pi` adds/updates a `file = {...}` field in the BibTeX entry for faster future lookup.
+- `--keep-local` / `-l`: in addition to the default references-tree PDF preservation above, store a matching local paper from `$HOME` (symlinked into `.mechpi/ingest/sources/` when possible), or download DOI/URL content when possible, for later `/mechingest` use. When a stored document is found, `mech-pi` adds/updates a `file = {...}` field in the BibTeX entry for faster future lookup.
 
 Example:
 
@@ -250,8 +250,12 @@ Opens the compiled PDF.
 - `MECHPI_DOCUMENT_VIEWER` — viewer command for opening stored source documents from `/mechingest`; defaults to `MECHPI_PDF_VIEWER` then `xdg-open`.
 - `MECHPI_INGEST_PREFERRED_PATHS` / `MECHPI_PREFERRED_PATHS` — path-list of directories to search before asking about a broad `$HOME` search; defaults to `~/Downloads` and `~/Documents/References`.
 - `MECHPI_PREFERRED_SEARCH_LIMIT` / `MECHPI_PREFERRED_SEARCH_NAME_LIMIT` — preferred-path search limits; defaults to 10000 and 5000.
+- `MECHPI_REFERENCES_PATH` / `MECHPI_REFERENCE_PATH` — destination root for PDFs selected through `/mechaddcite`; defaults to `~/Documents/References`.
+- `MECHPI_MINI_MODEL` — default fast model for small mech-pi tasks such as summaries and auto-commit messages; defaults to `openai/gpt-4o-mini`.
+- `MECHPI_SUMMARY_MODEL` — override mini model used for `/mechaddcite` citation/PDF summaries.
+- `MECHPI_COMMIT_MODEL` — override mini model used for generated git commit messages.
 - `MECHPI_AUTO_RAG=1` / `MECHPI_AUTO_RETRIEVE=1` — opt in to automatic per-prompt retrieval injection from `.mechpi/ingest/vector-store.json`; off by default so retrieval normally happens only when `mech_retrieve` is called.
-- `BROWSER` — browser command for the Google Scholar manual fallback and detail-page `l` web opening in `/mechaddcite`; defaults to `xdg-open`.
+- `BROWSER` — browser command for the Google Scholar manual fallback and `/mechaddcite` web fallback when no PDF can be downloaded; defaults to `xdg-open`.
 - `MECHPI_PROMPT_HISTORY_LIMIT` — number of persistent prompts to keep in `.mechpi/prompt-history.json`; defaults to 100.
 - `MECHPI_PREVIEW_MAX_QUALITY=1` — experimental maximum-quality preview mode. It raises inline LaTeX DPI to 2400 and makes equation-editor adaptive rendering target much larger rasters. This is slower and can create large terminal image payloads, but is useful for comparing sharpness.
 - `MECHPI_LATEX_PREVIEW_DPI` / `MECHPI_EQUATION_PREVIEW_DPI` — rendering DPI knobs for generated equation PNG previews; chat inline LaTeX defaults to 900 DPI, or 2400 when `MECHPI_PREVIEW_MAX_QUALITY=1`. Equation-editor previews use adaptive DPI unless `MECHPI_EQUATION_PREVIEW_DPI` is set.
