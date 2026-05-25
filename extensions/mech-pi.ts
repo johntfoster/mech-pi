@@ -7746,6 +7746,10 @@ export default function mechPi(pi: ExtensionAPI) {
       if (result.cancelled) ctx.ui.notify("New session cancelled", "info");
     }
   });
+  pi.registerCommand("mechpane", {
+    description: "Manage mech-pi logical panes. Usage: /mechpane [new|next|prev|status]",
+    handler: handleMechPaneCommand,
+  });
   pi.registerCommand("mechrag", {
     description: "Show or change mech-pi local ingest-store retrieval for this session. Usage: /mechrag [status|on|off]",
     handler: async (args, ctx) => {
