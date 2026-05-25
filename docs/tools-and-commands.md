@@ -8,6 +8,10 @@ For prompt editing and tmux-like copy-mode keys, see [keybindings.md](keybinding
 
 Manage mech-pi logical panes. The current pi session is pane 1; `new` creates pane 2, pane 3, etc. backed by new pi session files, `next`/`prev` cycle through panes in stable creation order, `status` lists them, and a number such as `/mechpane 2` jumps directly to that pane.
 
+### `/mechrag [status|on|off]`
+
+Show or change whether mech-pi local ingest-store retrieval is enabled for the current session and future new mech-pi panes. This controls access to `.mechpi/ingest/vector-store.json`; use `/mechingest keywords` to build or rebuild that store.
+
 ### `/mechmap [root.tex]`
 
 Ingest the current LaTeX repository and write `.mechpi/paper-map.json`. If compiled `.aux` files are present, the map also records label-to-equation-number data from `\newlabel` entries.
