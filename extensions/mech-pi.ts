@@ -2950,6 +2950,9 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
   private historyBrowseIndex = -1;
   private historyBrowsePrefix = "";
   private historyBrowseDraft = "";
+  private voiceDictationActive = false;
+  private voiceDictationBaseText = "";
+  private voiceDictationCursor = 0;
 
   constructor(tui: TUI, theme: any, keybindings: any, promptHistoryFile?: string, initialHistory: string[] = []) {
     super(tui, theme, keybindings);
