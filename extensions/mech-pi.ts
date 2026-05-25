@@ -7395,6 +7395,26 @@ async function handleMechPaneCommand(args: string, ctx: ExtensionCommandContext)
   ctx.ui.notify("Usage: /mechpane [new|next|prev|status|<number>]", "warning");
 }
 
+function handleMechIngestModeCommand(pi: ExtensionAPI, args: string, ctx: ExtensionCommandContext): boolean {
+  const cmd = args.trim().toLowerCase();
+  if (!cmd || !["status", "on", "off", "toggle", "enable", "enabled", "disable", "disabled"].includes(cmd)) return false;
+  const vectorStore = fss.existsSync(mechIngestStorePath(ctx.cwd));
+  const currentlyDisabled = mechRagDisabled(ctx, Boolean(pi.getFlag("no-mech-rag")));
+  if (cmd === "status") {
+    const paneDefault = mechPaneDefaultRagEnabled(ctx.cwd) ? "on" : "off";
+    ctx.ui.notify(`Mech-pi ingest retrieval is ${currentlyDisabled ? "off" : "on"} for this session. New-pane default: ${paneDefault}. Vector store: ${vectorStore ? "found" : "missing"}.`, currentlyDisabled ? "warning" : "info");
+    return true;
+  }
+  const enable = cmd === "toggle" ? currentlyDisabled : cmd === "on" || cmd === "enable" || cmd === "enabled";
+  setMechPaneDefaultRag(ctx.cwd, enable);
+  appendCurrentMechRagMode(pi, enable, `/mechingest ${enable ? "on" : "off"}`);
+  if (enable) enableMechRetrieveTool(pi);
+  else disableMechRetrieveTool(pi);
+  const missing = enable && !vectorStore ? " No vector store exists yet; run /mechingest <keywords> to build one." : "";
+  ctx.ui.notify(`Mech-pi ingest retrieval ${enable ? "enabled" : "disabled"} for this session and future new panes.${missing}`, enable && !vectorStore ? "warning" : "info");
+  return true;
+}
+
 export default function mechPi(pi: ExtensionAPI) {
   pi.registerFlag("no-mech-rag", { description: "Disable mech-pi retrieval from .mechpi/ingest/vector-store.json for this session", type: "boolean", default: false });
   installAssistantLatexPreviewRenderer();
