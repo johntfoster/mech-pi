@@ -2027,6 +2027,7 @@ abstract class MechPiModalTextEditor extends CustomEditor {
   wantsKeyRelease = true;
   protected mode: PromptMode = "insert";
   protected pendingPrefix = false;
+  private prefixTimer: ReturnType<typeof setTimeout> | null = null;
   protected pendingOperator: "d" | "y" | "c" | null = null;
   protected pendingOperatorCount = 1;
   protected pendingG = false;
