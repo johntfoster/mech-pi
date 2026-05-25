@@ -7820,27 +7820,9 @@ export default function mechPi(pi: ExtensionAPI) {
     handler: handleMechPaneCommand,
   });
   pi.registerCommand("mechrag", {
-    description: "Show or change mech-pi local ingest-store retrieval for this session. Usage: /mechrag [status|on|off]",
+    description: "Alias for /mechingest status|on|off|toggle.",
     handler: async (args, ctx) => {
-      const cmd = args.trim().toLowerCase() || "status";
-      if (cmd === "status") {
-        const disabled = mechRagDisabled(ctx, Boolean(pi.getFlag("no-mech-rag")));
-        ctx.ui.notify(`Mech-pi RAG is ${disabled ? "disabled" : "enabled"} for this session.`, disabled ? "warning" : "info");
-        return;
-      }
-      if (cmd === "off" || cmd === "disable" || cmd === "disabled") {
-        appendCurrentMechRagMode(pi, false, "/mechrag off");
-        disableMechRetrieveTool(pi);
-        ctx.ui.notify("Mech-pi RAG disabled for this session.", "info");
-        return;
-      }
-      if (cmd === "on" || cmd === "enable" || cmd === "enabled") {
-        appendCurrentMechRagMode(pi, true, "/mechrag on");
-        enableMechRetrieveTool(pi);
-        ctx.ui.notify("Mech-pi RAG enabled for this session.", "info");
-        return;
-      }
-      ctx.ui.notify("Usage: /mechrag [status|on|off]", "warning");
+      if (!handleMechIngestModeCommand(pi, args.trim() || "status", ctx)) ctx.ui.notify("Usage: /mechrag [status|on|off|toggle]", "warning");
     }
   });
   pi.registerCommand("mechaddcite", {
@@ -7852,8 +7834,15 @@ export default function mechPi(pi: ExtensionAPI) {
     handler: async (args, ctx) => { await runMechGotoCite(args, ctx); }
   });
   pi.registerCommand("mechingest", {
-    description: "Select local files or BibTeX references, extract/chunk them, and build .mechpi/ingest vector context. Usage: /mechingest <keywords>",
-    handler: async (args, ctx) => { await runMechIngest(args, ctx); }
+    description: "Toggle local ingest retrieval or build .mechpi/ingest vector context. Usage: /mechingest [status|on|off|toggle|<keywords>]",
+    handler: async (args, ctx) => {
+      if (handleMechIngestModeCommand(pi, args, ctx)) return;
+      const rebuilt = await runMechIngest(args, ctx);
+      if (rebuilt) {
+        appendCurrentMechRagMode(pi, true, "/mechingest rebuild");
+        enableMechRetrieveTool(pi);
+      }
+    }
   });
   pi.registerCommand("mechvoice", {
     description: "Speech-to-text input. Usage: /mechvoice [status|start|stop|toggle|wake on|wake off]",
