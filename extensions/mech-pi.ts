@@ -7350,7 +7350,7 @@ async function handleMechPaneCommand(args: string, ctx: ExtensionCommandContext)
     if (result.cancelled) ctx.ui.notify("Pane switch cancelled", "info");
     return;
   }
-  ctx.ui.notify("Usage: /mechpane [new|next|prev|status]", "warning");
+  ctx.ui.notify("Usage: /mechpane [new|next|prev|status|<number>]", "warning");
 }
 
 export default function mechPi(pi: ExtensionAPI) {
@@ -7778,7 +7778,7 @@ export default function mechPi(pi: ExtensionAPI) {
     }
   });
   pi.registerCommand("mechpane", {
-    description: "Manage mech-pi logical panes. Usage: /mechpane [new|next|prev|status]",
+    description: "Manage mech-pi logical panes. Usage: /mechpane [new|next|prev|status|<number>]",
     handler: handleMechPaneCommand,
   });
   pi.registerCommand("mechrag", {
