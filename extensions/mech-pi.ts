@@ -82,6 +82,11 @@ type PersistedMechPaneState = {
   defaultRagEnabled?: unknown;
 };
 
+type ExternalPiPane = { id?: unknown; order?: unknown; sessionFile?: unknown; cwd?: unknown };
+type ExternalPiPaneStore = { panes?: unknown; activeId?: unknown };
+
+let mechPaneShortcutCommandPrefix: "mechpane" | "pi-pane" = "mechpane";
+
 const globalMechPaneGroups: Map<string, MechPaneState> = (() => {
   const g = globalThis as typeof globalThis & { __mechPiPaneGroups?: Map<string, MechPaneState> };
   if (!g.__mechPiPaneGroups) g.__mechPiPaneGroups = new Map<string, MechPaneState>();
@@ -109,6 +114,45 @@ function normalizeMechPaneSessions(value: unknown): string[] {
 function defaultMechPaneState(cwd: string): MechPaneState {
   const key = mechPaneGroupKey(cwd);
   return { sessions: [], activeIndex: -1, defaultRagEnabled: fss.existsSync(mechIngestStorePath(key)) };
+}
+
+function externalPiPaneStore(): ExternalPiPaneStore | undefined {
+  const g = globalThis as typeof globalThis & { __piTmuxPanesExtensionStore_v1?: ExternalPiPaneStore };
+  const store = g.__piTmuxPanesExtensionStore_v1;
+  return store && Array.isArray(store.panes) ? store : undefined;
+}
+
+function externalPiPaneSessions(cwd: string): { sessions: string[]; activeIndex: number } | null {
+  const store = externalPiPaneStore();
+  if (!store || !Array.isArray(store.panes)) return null;
+  const panes = (store.panes as ExternalPiPane[])
+    .slice()
+    .sort((a, b) => (typeof a.order === "number" ? a.order : 0) - (typeof b.order === "number" ? b.order : 0));
+  const sessions: string[] = [];
+  let activeIndex = -1;
+  for (const pane of panes) {
+    if (typeof pane.cwd === "string" && path.resolve(pane.cwd) !== mechPaneGroupKey(cwd)) continue;
+    if (typeof pane.sessionFile !== "string" || pane.sessionFile.startsWith("memory:")) continue;
+    const file = path.resolve(pane.sessionFile);
+    if (!fss.existsSync(file) || sessions.includes(file)) continue;
+    if (pane.id === store.activeId) activeIndex = sessions.length;
+    sessions.push(file);
+  }
+  if (sessions.length === 0) return null;
+  if (activeIndex < 0) activeIndex = 0;
+  return { sessions, activeIndex };
+}
+
+function syncMechPaneStateFromExternal(cwd: string): boolean {
+  const external = externalPiPaneSessions(cwd);
+  if (!external) return false;
+  const state = mechPaneState(cwd);
+  const before = `${state.activeIndex}\n${state.sessions.join("\n")}`;
+  state.sessions = external.sessions;
+  state.activeIndex = external.activeIndex;
+  const after = `${state.activeIndex}\n${state.sessions.join("\n")}`;
+  if (before !== after) saveMechPaneState(cwd, state);
+  return true;
 }
 
 function sanitizeMechPaneState(cwd: string, state: MechPaneState): MechPaneState {
@@ -187,12 +231,11 @@ function setMechPaneDefaultRag(cwd: string, enabled: boolean): void {
 
 function rememberMechPaneSession(cwd: string, sessionFile?: string | null): void {
   if (!sessionFile) return;
+  if (syncMechPaneStateFromExternal(cwd)) return;
   const state = mechPaneState(cwd);
   const normalized = path.resolve(sessionFile);
   state.sessions = state.sessions.filter(file => fss.existsSync(file));
-  if (state.sessions.length === 0) {
-    for (const file of sessionParentChain(normalized)) if (!state.sessions.includes(file)) state.sessions.push(file);
-  }
+  for (const file of sessionParentChain(normalized)) if (!state.sessions.includes(file)) state.sessions.push(file);
   const existingIndex = state.sessions.indexOf(normalized);
   if (existingIndex >= 0) state.activeIndex = existingIndex;
   else {
@@ -203,6 +246,7 @@ function rememberMechPaneSession(cwd: string, sessionFile?: string | null): void
 }
 
 function availableMechPaneSessions(cwd: string): string[] {
+  syncMechPaneStateFromExternal(cwd);
   const state = mechPaneState(cwd);
   const beforeSessions = state.sessions.join("\n");
   const beforeActive = state.activeIndex;
