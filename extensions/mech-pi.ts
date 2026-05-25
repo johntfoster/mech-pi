@@ -6589,6 +6589,22 @@ function envFlag(name: string, defaultValue = false): boolean {
 }
 
 function voiceSpaceHoldEnabled(): boolean { return envFlag("MECHPI_VOICE_SPACE_HOLD", false); }
+function voskRealtimeEnabled(): boolean { return envFlag("MECHPI_VOSK_REALTIME", true); }
+
+function pythonHasVosk(command: string): boolean {
+  const r = spawnSync(command, ["-c", "import vosk"], { stdio: "ignore", env: mechRuntimeEnv() });
+  return !r.error && r.status === 0;
+}
+
+function findVoskPython(): string | null {
+  const configured = mechEnv("MECHPI_VOSK_PYTHON");
+  if (configured) return pythonHasVosk(configured) ? configured : null;
+  const candidates = ["python3", "/home/john/miniconda3/bin/python", "python"];
+  for (const candidate of candidates) {
+    if ((candidate.includes("/") ? fss.existsSync(candidate) : commandExists(candidate)) && pythonHasVosk(candidate)) return candidate;
+  }
+  return null;
+}
 
 type RecorderSpec = { cmd: string; args: string[]; name: string };
 
@@ -6597,6 +6613,14 @@ class VoiceInputController {
   private recorderStderr = "";
   private audioPath: string | null = null;
   private stopTimer: ReturnType<typeof setTimeout> | null = null;
+  private streamRecorder: ReturnType<typeof spawn> | null = null;
+  private streamStt: ReturnType<typeof spawn> | null = null;
+  private streamStderr = "";
+  private streamStdoutBuffer = "";
+  private streamCommitted = "";
+  private streamSubmitOnStop = false;
+  private streamCancelled = false;
+  private streamReady = false;
   private wakeChild: ReturnType<typeof spawn> | null = null;
   private wakeEnabled = false;
 
