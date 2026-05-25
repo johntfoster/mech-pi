@@ -7556,6 +7556,58 @@ export default function mechPi(pi: ExtensionAPI) {
       }
     }
   });
+  pi.registerCommand("new", {
+    description: "Start a new session with mech-pi options. Usage: /new --no-mech-rag",
+    getArgumentCompletions: (prefix: string): AutocompleteItem[] | null => {
+      const items = [
+        { value: "--no-mech-rag", label: "--no-mech-rag", description: "Disable local ingest-store retrieval in the new session" },
+      ];
+      const filtered = items.filter(item => item.value.startsWith(prefix.trim()));
+      return filtered.length ? filtered : items;
+    },
+    handler: async (args, ctx) => {
+      const tokens = args.trim().split(/\s+/).filter(Boolean);
+      const wantsNoRag = tokens.some(t => t === "--no-mech-rag" || t === "--no-rag" || t === "--without-mech-rag");
+      const wantsHelp = tokens.some(t => t === "--help" || t === "-h");
+      const known = new Set(["--no-mech-rag", "--no-rag", "--without-mech-rag", "--help", "-h"]);
+      const unknown = tokens.filter(t => !known.has(t));
+      if (wantsHelp || !wantsNoRag || unknown.length) {
+        const extra = unknown.length ? ` Unknown option(s): ${unknown.join(", ")}.` : "";
+        ctx.ui.notify(`Usage: /new --no-mech-rag${extra}\nPlain /new is handled by pi's built-in command.`, unknown.length ? "warning" : "info");
+        return;
+      }
+      const parentSession = ctx.sessionManager.getSessionFile();
+      const result = await ctx.newSession({
+        parentSession: parentSession ?? undefined,
+        setup: async (sm) => { appendMechRagMode(sm, false, "/new --no-mech-rag"); },
+        withSession: async (nextCtx) => { nextCtx.ui.notify("New session started with mech-pi RAG disabled.", "info"); },
+      });
+      if (result.cancelled) ctx.ui.notify("New session cancelled", "info");
+    }
+  });
+  pi.registerCommand("mechrag", {
+    description: "Show or change mech-pi local ingest-store retrieval for this session. Usage: /mechrag [status|on|off]",
+    handler: async (args, ctx) => {
+      const cmd = args.trim().toLowerCase() || "status";
+      if (cmd === "status") {
+        const disabled = mechRagDisabled(ctx, Boolean(pi.getFlag("no-mech-rag")));
+        ctx.ui.notify(`Mech-pi RAG is ${disabled ? "disabled" : "enabled"} for this session.`, disabled ? "warning" : "info");
+        return;
+      }
+      if (cmd === "off" || cmd === "disable" || cmd === "disabled") {
+        appendMechRagMode(ctx.sessionManager, false, "/mechrag off");
+        disableMechRetrieveTool(pi);
+        ctx.ui.notify("Mech-pi RAG disabled for this session.", "info");
+        return;
+      }
+      if (cmd === "on" || cmd === "enable" || cmd === "enabled") {
+        appendMechRagMode(ctx.sessionManager, true, "/mechrag on");
+        ctx.ui.notify("Mech-pi RAG enabled for this session. Run /reload if mech_retrieve was removed from the active tools.", "info");
+        return;
+      }
+      ctx.ui.notify("Usage: /mechrag [status|on|off]", "warning");
+    }
+  });
   pi.registerCommand("mechaddcite", {
     description: "Find verified citation candidates, add BibTeX, and insert a source-grounded citation. Usage: /mechaddcite <citation need>",
     handler: async (args, ctx) => { await runMechAddCite(args, ctx); }
