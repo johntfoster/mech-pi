@@ -7328,6 +7328,7 @@ export default function mechPi(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     refreshMechPiRcConfig(ctx.cwd);
+    rememberMechPaneSession(ctx.sessionManager.getSessionFile());
     latexPreviewCwd = ctx.cwd;
     if (mechRagDisabled(ctx, Boolean(pi.getFlag("no-mech-rag")))) disableMechRetrieveTool(pi);
     activeVoice = new VoiceInputController(ctx);
