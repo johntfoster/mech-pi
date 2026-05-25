@@ -3725,10 +3725,10 @@ async function generateCommitMessage(ctx: ExtensionContext, root: string, rels: 
 
 async function autoCommitPaths(ctx: ExtensionContext, absPaths: string[], reason: string): Promise<void> {
   if (/^(0|false|off|no)$/i.test(process.env.MECHPI_AUTO_COMMIT_EDITS ?? "1")) return;
-  const existing = unique(absPaths.map(p => path.resolve(p)).filter(p => fss.existsSync(p)));
-  if (!existing.length) return;
+  const targets = unique(absPaths.map(p => path.resolve(p)));
+  if (!targets.length) return;
   const groups = new Map<string, string[]>();
-  for (const abs of existing) {
+  for (const abs of targets) {
     const st = await gitPathStatus(ctx, abs);
     if (!st.root || !st.rel) continue;
     if (!groups.has(st.root)) groups.set(st.root, []);
@@ -3745,6 +3745,101 @@ async function autoCommitPaths(ctx: ExtensionContext, absPaths: string[], reason
     if (commit.code === 0) ctx.ui.notify(`Committed ${rels.join(", ")}: ${message}`, "info");
     else ctx.ui.notify(`git commit failed for ${rels.join(", ")}: ${commit.stderr || commit.stdout}`, "error");
   }
+}
+
+
+type AgentGitGuardToolState = { paths: string[]; reason: string; mutatingBashRoot?: string };
+const agentGitGuardToolState = new Map<string, AgentGitGuardToolState>();
+
+function agentGitGuardEnabled(): boolean { return !/^(0|false|off|no)$/i.test(process.env.MECHPI_AGENT_GIT_GUARD ?? "1"); }
+
+async function gitRootForDir(cwd: string, dir: string): Promise<string | null> {
+  const r = await run("git", ["-C", dir, "rev-parse", "--show-toplevel"], cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
+  return r.code === 0 ? r.stdout.trim() : null;
+}
+
+async function repoDirtySummary(ctx: ExtensionContext, root: string): Promise<string[]> {
+  const r = await run("git", ["-C", root, "status", "--porcelain"], ctx.cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
+  if (r.code !== 0) return [`<could not read git status: ${r.stderr || r.stdout}>`];
+  return r.stdout.split(/\r?\n/).map(s => s.trimEnd()).filter(Boolean);
+}
+
+async function ensureRepoCleanForAgentMutation(ctx: ExtensionContext, roots: string[]): Promise<string | null> {
+  if (!agentGitGuardEnabled()) return null;
+  for (const root of unique(roots.filter(Boolean))) {
+    const dirty = await repoDirtySummary(ctx, root);
+    if (dirty.length) return `Refusing agent file mutation because ${root} is not clean. Commit/stash existing changes first. Dirty paths:\n${dirty.slice(0, 20).join("\n")}${dirty.length > 20 ? "\n…" : ""}`;
+  }
+  return null;
+}
+
+async function changedRepoAbsPaths(ctx: ExtensionContext, root: string): Promise<string[]> {
+  const r = await run("git", ["-C", root, "status", "--porcelain"], ctx.cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
+  if (r.code !== 0) return [];
+  const rels: string[] = [];
+  for (const line of r.stdout.split(/\r?\n/).filter(Boolean)) {
+    let rel = line.slice(3).trim();
+    if (rel.includes(" -> ")) rel = rel.split(" -> ").pop()!.trim();
+    rel = rel.replace(/^\"|\"$/g, "");
+    if (!rel || rel.split(/[\\/]/).includes(".mechpi")) continue;
+    const abs = path.resolve(root, rel);
+    if (isGeneratedLatexArtifact(abs)) continue;
+    rels.push(abs);
+  }
+  return unique(rels);
+}
+
+function bashLooksMutating(command: string): boolean {
+  const c = command.trim();
+  if (!c) return false;
+  return /(^|[;&|]\s*)(apply_patch|python\d*|node|npm|pnpm|yarn|make|cmake|touch|rm|mv|cp|mkdir|rmdir|install|patch|perl\s+-pi|sed\s+-i|tee)\b/.test(c)
+    || /(^|\s)git\s+(apply|checkout|reset|merge|rebase|commit|add|mv|rm|restore)\b/.test(c)
+    || /(^|[^<])>>?\s*[^&\s]/.test(c)
+    || /<<\s*['\"]?PATCH['\"]?/.test(c);
+}
+
+async function agentMutationInfo(event: any, ctx: ExtensionContext): Promise<AgentGitGuardToolState | null> {
+  if (event.toolName === "edit" || event.toolName === "write") {
+    const p = typeof event.input?.path === "string" ? path.resolve(ctx.cwd, event.input.path) : "";
+    if (!p || isMechPiInternalPath(p) || isGeneratedLatexArtifact(p)) return null;
+    return { paths: [p], reason: `${event.toolName} ${path.relative(ctx.cwd, p) || p}` };
+  }
+  if (event.toolName === "bash" && typeof event.input?.command === "string" && bashLooksMutating(event.input.command)) {
+    const root = await gitRootForDir(ctx.cwd, ctx.cwd);
+    if (!root) return null;
+    return { paths: [], mutatingBashRoot: root, reason: `agent bash mutation: ${event.input.command.slice(0, 80)}` };
+  }
+  return null;
+}
+
+async function handleAgentMutationToolCall(event: any, ctx: ExtensionContext): Promise<{ block?: boolean; reason?: string } | void> {
+  const info = await agentMutationInfo(event, ctx);
+  if (!info) return;
+  const roots: string[] = [];
+  for (const p of info.paths) {
+    const root = await gitRootForDir(ctx.cwd, fss.existsSync(p) && fss.statSync(p).isDirectory() ? p : path.dirname(p));
+    if (root) roots.push(root);
+  }
+  if (info.mutatingBashRoot) roots.push(info.mutatingBashRoot);
+  const reason = await ensureRepoCleanForAgentMutation(ctx, roots);
+  if (reason) {
+    ctx.ui.notify(reason, "error");
+    return { block: true, reason };
+  }
+  agentGitGuardToolState.set(event.toolCallId, info);
+}
+
+async function handleAgentMutationToolResult(event: any, ctx: ExtensionContext): Promise<void> {
+  const info = agentGitGuardToolState.get(event.toolCallId);
+  if (!info) return;
+  agentGitGuardToolState.delete(event.toolCallId);
+  if (event.isError) return;
+  if (info.mutatingBashRoot) {
+    const changed = await changedRepoAbsPaths(ctx, info.mutatingBashRoot);
+    if (changed.length) await autoCommitPaths(ctx, changed, info.reason);
+    return;
+  }
+  await autoCommitPaths(ctx, info.paths, info.reason);
 }
 
 type BibSyncConfig = { globalBib?: string; enabled: boolean };
@@ -6671,6 +6766,14 @@ export default function mechPi(pi: ExtensionAPI) {
     activePromptEditor?.returnToInsertAfterChat();
   });
 
+  pi.on("tool_call", async (event, ctx) => {
+    return await handleAgentMutationToolCall(event, ctx);
+  });
+
+  pi.on("tool_result", async (event, ctx) => {
+    await handleAgentMutationToolResult(event, ctx);
+  });
+
   pi.on("session_shutdown", async () => {
     activeVoice?.dispose();
     activeVoice = null;
@@ -6688,7 +6791,8 @@ export default function mechPi(pi: ExtensionAPI) {
     return { systemPrompt: ctx.getSystemPrompt() + `\n\nMECH-PI RESEARCH MODE:\n- The LaTeX repository is the source of truth. If chat memory conflicts with TeX files, reload/ingest files and trust TeX.\n- For mechanics/theory claims, prefer focused source citations: file:line and equation labels.\n- Nudge toward truthful mechanics: distinguish assumptions, definitions, derivations, constitutive restrictions, and conjectures.\n- Use mech_ingest, mech_focus_equation, mech_search_symbol, mech_check, and mech_compile when relevant.\n- Use mech_retrieve for on-demand retrieval from .mechpi/ingest/vector-store.json when a question needs ingested reference/background context; do not read or send the whole vector store.\n- Keep small definitions and identifiers inline in prose, e.g. p is pressure or c_t is total compressibility; do not force-render single symbols or short definitions.
 - Put actual equations, derivations, fractions, derivatives, integrals/sums, matrices/cases, and relation-heavy expressions in display math (\\[...\\] or equation/align environments) so mech-pi uses the full equation renderer.
 - Use raw LaTeX code blocks only when the user explicitly asks for raw source/code.
-- If MECH-PI INGESTED REFERENCE CONTEXT is present, use it as the first-pass RAG result. Otherwise call mech_retrieve before broad filesystem searches for ingested references/background papers.\nCurrent paper cache summary:\n${mapNote}${ingestNote}` };
+- If MECH-PI INGESTED REFERENCE CONTEXT is present, use it as the first-pass RAG result. Otherwise call mech_retrieve before broad filesystem searches for ingested references/background papers.
+- Before using write/edit or mutating bash commands, the mech-pi agent git guard requires the target git repo to be clean. After successful agent file mutations, mech-pi automatically commits the changed paths with a concise generated commit message. If a mutation is blocked because the repo is dirty, stop and ask the user how to handle the existing changes.\nCurrent paper cache summary:\n${mapNote}${ingestNote}` };
   });
 
   pi.registerTool({
