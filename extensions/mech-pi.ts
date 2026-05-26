@@ -139,10 +139,6 @@ function mechRagModeData(enabled: boolean, source: string): Record<string, unkno
   return { enabled, mode: enabled ? "on" : "off", source, createdAt: new Date().toISOString() };
 }
 
-function appendMechRagMode(sm: { appendCustomEntry: (customType: string, data: unknown) => unknown }, enabled: boolean, source: string): void {
-  sm.appendCustomEntry(MECH_RAG_SESSION_ENTRY, mechRagModeData(enabled, source));
-}
-
 function appendCurrentMechRagMode(pi: ExtensionAPI, enabled: boolean, source: string): void {
   pi.appendEntry(MECH_RAG_SESSION_ENTRY, mechRagModeData(enabled, source));
 }
