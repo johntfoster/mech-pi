@@ -78,7 +78,7 @@ See [docs/terminal-images.md](docs/terminal-images.md) for terminal image settin
 /mechaddcite prompt      find/select citation(s), summarize PDFs, update .bib, optionally insert into TeX
 /mechciteedit query      edit a local BibTeX entry with a rendered reference preview
 /mechgotocite query      fuzzy search local .bib entries and open the best paper website
-/mechrag status|on|off   toggle retrieval from the local ingest store for this session/future pmux tabs
+/mechrag status|on|off   toggle retrieval from the local ingest store for this session/project
 /mechingest keywords     select refs/files, extract text, and build a local retrieval store
 /mechcompile             run latexmk on the detected root and refresh aux equation numbers
 /mechvoice status        configure/use local speech-to-text prompt input
@@ -90,7 +90,7 @@ See [docs/tools-and-commands.md](docs/tools-and-commands.md).
 
 Configuration can be layered with `.mechpirc`: built-in defaults, then `$HOME/.mechpirc`, then a project-local `./.mechpirc` override. The files are re-read on `/reload` and use simple `KEY=value` / `export KEY=value` lines for `MECHPI_*` settings such as `MECHPI_REFERENCES_PATH`, `MECHPI_SUMMARY_MODEL`, or `MECHPI_COMMIT_MODEL`.
 
-`/mechingest` builds `.mechpi/ingest/vector-store.json` with text embeddings when an embedding backend is available. Use `/mechrag status|on|off` to control whether that store is available to the current session and future pmux tabs. Its source-confirmation flow now uses foreground h/l drill-down popup layers so each progressive prompt sits visually above the selector. By default it uses the free/open-source Python `sentence-transformers` backend (`sentence-transformers/all-MiniLM-L6-v2`) from the package-local `.mechpi-python/` environment installed by `npm postinstall`; configure `MECHPI_PYTHON`, `MECHPI_EMBED_MODEL`, `MECHPI_EMBED_PROVIDER=openai`, or `MECHPI_EMBED_PROVIDER=command`/`MECHPI_EMBED_COMMAND` as needed. Its selector distinguishes already-ingested green `✓` items from gray staged items, lets you summarize actual extracted text and open stored source documents externally, and only gives a BibTeX reference the gray staged check after the source file has been rectified: reuse a BibTeX `file` field, confirm a direct web download, enter a filepath, confirm a preferred-path match, or explicitly approve a broader `$HOME` search. Preferred paths are configurable with `MECHPI_INGEST_PREFERRED_PATHS`/`MECHPI_PREFERRED_PATHS` and default to `~/Downloads` and `~/Documents/References`. Filesystem searches show progress while scanning/scoring. Confirmed local sources are symlinked into `.mechpi/ingest/sources/` when possible to avoid duplicate PDF storage, while extracted text is still written under `.mechpi/ingest/text/`. Press `Enter` to exit the selector and build the vector store from the confirmed staged files. Later turns should use the `mech_retrieve` tool to query the local store and send only top matching chunks to the model. Set `MECHPI_AUTO_RAG=1` (or `MECHPI_AUTO_RETRIEVE=1`) only if you want automatic per-prompt retrieval injected into the system prompt.
+`/mechingest` builds `.mechpi/ingest/vector-store.json` with text embeddings when an embedding backend is available. Use `/mechrag status|on|off` to control whether that store is available to the current session and as the project default for future sessions. Its source-confirmation flow now uses foreground h/l drill-down popup layers so each progressive prompt sits visually above the selector. By default it uses the free/open-source Python `sentence-transformers` backend (`sentence-transformers/all-MiniLM-L6-v2`) from the package-local `.mechpi-python/` environment installed by `npm postinstall`; configure `MECHPI_PYTHON`, `MECHPI_EMBED_MODEL`, `MECHPI_EMBED_PROVIDER=openai`, or `MECHPI_EMBED_PROVIDER=command`/`MECHPI_EMBED_COMMAND` as needed. Its selector distinguishes already-ingested green `✓` items from gray staged items, lets you summarize actual extracted text and open stored source documents externally, and only gives a BibTeX reference the gray staged check after the source file has been rectified: reuse a BibTeX `file` field, confirm a direct web download, enter a filepath, confirm a preferred-path match, or explicitly approve a broader `$HOME` search. Preferred paths are configurable with `MECHPI_INGEST_PREFERRED_PATHS`/`MECHPI_PREFERRED_PATHS` and default to `~/Downloads` and `~/Documents/References`. Filesystem searches show progress while scanning/scoring. Confirmed local sources are symlinked into `.mechpi/ingest/sources/` when possible to avoid duplicate PDF storage, while extracted text is still written under `.mechpi/ingest/text/`. Press `Enter` to exit the selector and build the vector store from the confirmed staged files. Later turns should use the `mech_retrieve` tool to query the local store and send only top matching chunks to the model. Set `MECHPI_AUTO_RAG=1` (or `MECHPI_AUTO_RETRIEVE=1`) only if you want automatic per-prompt retrieval injected into the system prompt.
 
 ## Prompt keybindings
 
@@ -104,7 +104,6 @@ Configuration can be layered with `.mechpirc`: built-in defaults, then `$HOME/.m
 - `Ctrl+Alt+Space`: toggle voice recording.
 - Optional: set `MECHPI_VOICE_SPACE_HOLD=1`, then hold `Space` on an empty prompt for push-to-talk.
 - `Ctrl-a` starts a prefix that waits up to 2 seconds for the next key.
-- `Ctrl-a` then `c`: create a new pmux Kitty tab; `Ctrl-a` then `n` / `p`: switch to the next/previous pmux tab; `Ctrl-a` then `1` ... `9`: jump directly to that numbered pmux tab; `Ctrl-a` then `x`: close the current pmux tab after confirmation.
 - `Ctrl-a` then `]`: enter full-screen copy/navigation mode.
 - `Ctrl-a` then `[`: return from copy mode to the prompt in `NORMAL` mode.
 - Commands/dialogs return to `NORMAL` mode when prompt text is present and `INSERT` mode when the prompt is empty; full-screen copy mode returns in `NORMAL` mode so `p`/`P` can paste immediately.
@@ -165,7 +164,7 @@ See [docs/equation-editor.md](docs/equation-editor.md).
 
 ## Terminal images
 
-Inline equation previews work best in an image-capable terminal such as Kitty, Ghostty, WezTerm, or iTerm2. pmux uses native Kitty tabs, so run pi directly in Kitty.
+Inline equation previews work best in an image-capable terminal such as Kitty, Ghostty, WezTerm, or iTerm2.
 
 Full notes: [docs/terminal-images.md](docs/terminal-images.md).
 
