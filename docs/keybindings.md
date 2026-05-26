@@ -22,6 +22,7 @@ Default typing mode. After commands, dialogs, and assistant responses return foc
 - `Ctrl-a` then `c`: create a new pmux Kitty tab
 - `Ctrl-a` then `n` / `p`: switch to next/previous pmux tab
 - `Ctrl-a` then `1` ... `9`: jump directly to that numbered pmux tab
+- `Ctrl-a` then `x`: close the current pmux tab after confirmation
 - `Ctrl-a` then `]`: enter full-screen copy mode
 
 ### NORMAL mode
@@ -48,6 +49,7 @@ Vim-style prompt editing.
 - `Ctrl-a` then `c`: create a new pmux Kitty tab
 - `Ctrl-a` then `n` / `p`: switch to next/previous pmux tab
 - `Ctrl-a` then `1` ... `9`: jump directly to that numbered pmux tab
+- `Ctrl-a` then `x`: close the current pmux tab after confirmation
 - `Ctrl-a` then `]`: enter full-screen copy mode
 
 ### VISUAL / VISUAL LINE mode in the prompt
@@ -90,7 +92,7 @@ Use `Ctrl-a` then `]` from the prompt to leave the prompt and enter a full-scree
 
 The key sequence is prefix-style: press `Ctrl-a`, release it, then press the command key within 2 seconds. If your terminal batches the keys as `Ctrl-a]`, `Ctrl-a c`, `Ctrl-a n`, or similar, that is also handled. If you keep holding Ctrl and send `Ctrl-]`, that is handled too.
 
-Prompt prefix commands are `c` for a new pmux Kitty tab, `n`/`p` for next/previous pmux tab, `1`...`9` for direct pmux tab selection, and `]` for full-screen copy mode.
+Prompt prefix commands are `c` for a new pmux Kitty tab, `n`/`p` for next/previous pmux tab, `1`...`9` for direct pmux tab selection, `x` for close-tab confirmation, and `]` for full-screen copy mode.
 
 ### COPY mode
 
