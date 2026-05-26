@@ -262,7 +262,9 @@ Opens the compiled PDF.
 - `MECHPI_SUMMARY_MODEL` — model used for `/mechaddcite` citation/PDF summaries, in the same `provider/model` style as `MECHPI_COMMIT_MODEL`; defaults to `openai/gpt-5.4`.
 - `MECHPI_SUMMARY_SERVICE_TIER` — OpenAI/Azure fast serving tier for summaries; defaults to `priority`.
 - `MECHPI_SUMMARY_MAX_TOKENS` — summary response token cap; defaults to `700`.
+- `MECHPI_SUMMARY_TIMEOUT_MS` — citation/PDF summary background job timeout; defaults to `8000`.
 - `MECHPI_COMMIT_MODEL` — model used for generated git commit messages; defaults to `MECHPI_MINI_MODEL` then `openai/gpt-4o-mini`.
+- `MECHPI_COMMIT_TIMEOUT_MS` — generated git commit message timeout before falling back to a deterministic local subject; defaults to `2500`.
 - `MECHPI_MINI_MODEL` — fallback fast model for commit messages and other small tasks; defaults to `openai/gpt-4o-mini`.
 - `MECHPI_AUTO_RAG=1` / `MECHPI_AUTO_RETRIEVE=1` — opt in to automatic per-prompt retrieval injection from `.mechpi/ingest/vector-store.json`; off by default so retrieval normally happens only when `mech_retrieve` is called.
 - `MECHPI_NO_RAG=1` / `MECHPI_DISABLE_RAG=1` / `MECHPI_RAG=0` — fully disable mech-pi local ingest-store retrieval for the startup session, like `/mechrag off` but from the shell.
