@@ -6,7 +6,7 @@ For prompt editing and prefix/copy-mode keys, see [keybindings.md](keybindings.m
 
 ### `/mechrag [status|on|off]`
 
-Show or change whether mech-pi local ingest-store retrieval is enabled for the current session and future pmux tabs. This controls access to `.mechpi/ingest/vector-store.json`; use `/mechingest keywords` to build or rebuild that store.
+Show or change whether mech-pi local ingest-store retrieval is enabled for the current session and as the project default for future sessions. This controls access to `.mechpi/ingest/vector-store.json`; use `/mechingest keywords` to build or rebuild that store.
 
 ### `/mechmap [root.tex]`
 
@@ -164,7 +164,7 @@ Future prompts in the same project can call the `mech_retrieve` tool to embed a 
 
 Automatic retrieval injection is off by default so retrieved chunks are not sent with every API request. Set `MECHPI_AUTO_RAG=1` or `MECHPI_AUTO_RETRIEVE=1` to restore automatic per-prompt retrieval into `MECH-PI INGESTED REFERENCE CONTEXT`.
 
-pmux tabs inherit the project `/mechrag` default from `.mechpi/rag.json`: if a project already has `.mechpi/ingest/vector-store.json`, retrieval starts on unless you set `/mechrag off`; otherwise new tabs start with retrieval off. Use `/mechrag status`, `/mechrag off`, or `/mechrag on` to inspect or change this mode. `pi --no-mech-rag` still disables ingest retrieval at startup.
+Future sessions in the same project inherit the project `/mechrag` default from `.mechpi/rag.json`: if a project already has `.mechpi/ingest/vector-store.json`, retrieval starts on unless you set `/mechrag off`; otherwise new sessions start with retrieval off. Use `/mechrag status`, `/mechrag off`, or `/mechrag on` to inspect or change this mode. `pi --no-mech-rag` still disables ingest retrieval at startup.
 
 The command also creates or updates a local `AGENTS.md` block instructing future agents to use `mech_retrieve` for the vector-store RAG context before broad filesystem searches. Running `/mechingest` again lets you add or unselect items and rebuilds the store.
 
