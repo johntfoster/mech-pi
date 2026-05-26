@@ -1,16 +1,12 @@
 # Tools and commands
 
-For prompt editing and tmux-like copy-mode keys, see [keybindings.md](keybindings.md).
+For prompt editing and prefix/copy-mode keys, see [keybindings.md](keybindings.md).
 
 ## Slash commands
 
-### `/mechpane [new|next|prev|status|<number>]`
-
-Manage mech-pi logical panes. The current pi session is pane 1; `new` creates pane 2, pane 3, etc. backed by new pi session files, `next`/`prev` cycle through panes in stable creation order, `status` lists them, and a number such as `/mechpane 2` jumps directly to that pane.
-
 ### `/mechrag [status|on|off]`
 
-Show or change whether mech-pi local ingest-store retrieval is enabled for the current session and future new mech-pi panes. This controls access to `.mechpi/ingest/vector-store.json`; use `/mechingest keywords` to build or rebuild that store.
+Show or change whether mech-pi local ingest-store retrieval is enabled for the current session and future pmux tabs. This controls access to `.mechpi/ingest/vector-store.json`; use `/mechingest keywords` to build or rebuild that store.
 
 ### `/mechmap [root.tex]`
 
@@ -168,7 +164,7 @@ Future prompts in the same project can call the `mech_retrieve` tool to embed a 
 
 Automatic retrieval injection is off by default so retrieved chunks are not sent with every API request. Set `MECHPI_AUTO_RAG=1` or `MECHPI_AUTO_RETRIEVE=1` to restore automatic per-prompt retrieval into `MECH-PI INGESTED REFERENCE CONTEXT`.
 
-Mech-pi no longer overrides pi's built-in `/new` command. New mech-pi logical panes inherit the pane group's `/mechrag` default: if pane 1 was opened in a folder that already had `.mechpi/ingest/vector-store.json`, retrieval starts on; otherwise new panes are created with `/mechrag off`. Use `/mechrag status`, `/mechrag off`, or `/mechrag on` to inspect or change this mode. `pi --no-mech-rag` still disables ingest retrieval at startup.
+pmux tabs inherit the project `/mechrag` default from `.mechpi/rag.json`: if a project already has `.mechpi/ingest/vector-store.json`, retrieval starts on unless you set `/mechrag off`; otherwise new tabs start with retrieval off. Use `/mechrag status`, `/mechrag off`, or `/mechrag on` to inspect or change this mode. `pi --no-mech-rag` still disables ingest retrieval at startup.
 
 The command also creates or updates a local `AGENTS.md` block instructing future agents to use `mech_retrieve` for the vector-store RAG context before broad filesystem searches. Running `/mechingest` again lets you add or unselect items and rebuilds the store.
 
