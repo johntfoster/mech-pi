@@ -11,7 +11,7 @@ Inline images are most reliable with:
 - WezTerm
 - iTerm2
 
-Many terminals do not support inline PNG protocols, including many default Linux terminal emulators and macOS Terminal.app. pmux is designed around native Kitty tabs, so run pi directly in Kitty for the best preview behavior.
+Many terminals do not support inline PNG protocols, including many default Linux terminal emulators and macOS Terminal.app. Run pi directly in an image-capable terminal for the best preview behavior.
 
 ## SSH
 
