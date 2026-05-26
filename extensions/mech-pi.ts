@@ -7515,9 +7515,9 @@ export default function mechPi(pi: ExtensionAPI) {
       if (activePromptEditor?.tryHandlePromptBackspaceInput(data)) return { consume: true };
       return activePromptEditor?.tryHandlePanePrefixInput(data) ? { consume: true } : undefined;
     });
-    if (await hasTexFileShallow(ctx.cwd)) {
-      ctx.ui.setStatus("mech-pi", "mech-pi ready");
-    }
+    // The startup header already shows that mech-pi loaded; keep the footer
+    // available for actionable transient statuses such as voice recording.
+    ctx.ui.setStatus("mech-pi", undefined);
   });
 
   pi.on("agent_end", async () => {
@@ -7532,7 +7532,8 @@ export default function mechPi(pi: ExtensionAPI) {
     await handleAgentMutationToolResult(event, ctx);
   });
 
-  pi.on("session_shutdown", async () => {
+  pi.on("session_shutdown", async (_event, ctx) => {
+    ctx.ui.setStatus("mech-pi", undefined);
     activeVoice?.dispose();
     activeVoice = null;
     activePromptEditor = null;
