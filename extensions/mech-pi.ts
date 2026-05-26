@@ -1514,10 +1514,8 @@ function useTerminalLatexImages(): boolean {
   const forced = mechEnv("MECHPI_LATEX_PREVIEW_IMAGES")?.toLowerCase();
   if (forced === "1" || forced === "true" || forced === "kitty") return true;
   if (forced === "0" || forced === "false" || forced === "ansi") return false;
-  // Native terminal images are the only readable rendered-PNG path.  In tmux,
-  // Kitty passthrough images may not scroll in copy-mode because tmux treats
-  // them as opaque terminal escape sequences, but rasterizing to Unicode is not
-  // readable enough for equations.
+  // Native terminal images are the only readable rendered-PNG path; rasterizing
+  // equations to Unicode is not readable enough for mechanics work.
   return !!getCapabilities().images;
 }
 
