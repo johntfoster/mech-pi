@@ -7716,10 +7716,6 @@ export default function mechPi(pi: ExtensionAPI) {
       }
     }
   });
-  pi.registerCommand("mechpane", {
-    description: "Manage mech-pi logical panes. Usage: /mechpane [new|next|prev|status|<number>]",
-    handler: handleMechPaneCommand,
-  });
   pi.registerCommand("mechrag", {
     description: "Show or change mech-pi local ingest-store retrieval for this session. Usage: /mechrag [status|on|off]",
     getArgumentCompletions: (prefix: string): AutocompleteItem[] | null => {
