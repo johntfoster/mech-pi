@@ -2120,14 +2120,21 @@ abstract class MechPiModalTextEditor extends CustomEditor {
   protected promptModeLine(width: number): string {
     const modeName = this.modeName();
     const source = this.sourceLineStart !== undefined ? ` ${this.currentSourceLocation()} ` : "";
-    const label = ` ${modeName} `;
+    const label = this.promptModeLabel(modeName);
     const command = this.mode === "command" ? `${this.commandPrefix}${this.commandBuffer}` : "";
-    const suffix = `${source}${label}`;
-    const commandText = command ? truncateToWidth(command, Math.max(0, width - visibleWidth(suffix) - 1), "") : "";
-    const filler = "─".repeat(Math.max(0, width - visibleWidth(commandText) - visibleWidth(suffix)));
-    const raw = `${commandText}${filler}${suffix}`;
+    const suffixWidth = visibleWidth(source) + visibleWidth(label);
+    const commandText = command ? truncateToWidth(command, Math.max(0, width - suffixWidth - 1), "") : "";
+    const filler = "─".repeat(Math.max(0, width - visibleWidth(commandText) - suffixWidth));
     const color = (this as any).borderColor ?? ((x: string) => x);
-    return color(truncateToWidth(raw, width, ""));
+    const raw = `${commandText ? color(commandText) : ""}${color(filler)}${source ? color(source) : ""}${label}`;
+    return truncateToWidth(raw, width, "");
+  }
+
+  protected promptModeLabel(modeName: string): string {
+    const recording = /^VOICE recording/.test(modeName) || modeName === "VOICE REC";
+    const text = modeName === "VOICE REC" ? "VOICE recording" : modeName;
+    const styledText = themeFg(this.uiTheme, "success", text);
+    return recording ? ` ${voiceRecordingDot()} ${styledText} ` : ` ${styledText} `;
   }
 
   protected modeName(): string { return this.status || (this.mode === "visualLine" ? "VISUAL LINE" : this.mode.toUpperCase()); }
@@ -6924,7 +6931,7 @@ function envFlag(name: string, defaultValue = false): boolean {
 function voiceSpaceHoldEnabled(): boolean { return envFlag("MECHPI_VOICE_SPACE_HOLD", false); }
 function voskRealtimeEnabled(): boolean { return envFlag("MECHPI_VOSK_REALTIME", true); }
 function isVoiceToggleInput(data: string): boolean { return data === "\x00" || matchesKey(data, Key.ctrl("space")); }
-function voiceRecordingStatus(): string { return "\x1b[5;31m●\x1b[0m voice recording"; }
+function voiceRecordingDot(): string { return "\x1b[5;31m●\x1b[0m"; }
 
 function pythonHasVosk(command: string): boolean {
   const r = spawnSync(command, ["-c", "import vosk"], { stdio: "ignore", env: mechRuntimeEnv() });
