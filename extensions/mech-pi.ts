@@ -4753,13 +4753,19 @@ async function generateCitationSummary(ctx: ExtensionContext, c: CitationCandida
   try {
     const model = await summaryModel(ctx);
     if (!model) return fallback || "No model selected for summary generation.";
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-    if (!auth.ok || !auth.apiKey) return fallback;
-    const msg: Message = { role: "user", timestamp: Date.now(), content: [{ type: "text", text: `Write one concise but adequate paragraph summarizing this paper for citation selection. Use only supplied ${sourceLabel}; do not invent facts. Include the main topic, method/evidence, and why it may be useful to cite.\n\nTitle: ${c.title}\nAuthors: ${c.authors.join(", ")}\nYear: ${c.year ?? ""}\nVenue: ${c.venue ?? ""}\nDOI/arXiv: ${c.doi ?? c.arxivId ?? ""}\n\n${sourceLabel}:\n${sourceText || c.abstract || "No abstract/text available."}` }] };
     const maxTokens = Number.parseInt(mechEnv("MECHPI_SUMMARY_MAX_TOKENS") ?? "700", 10) || 700;
     const serviceTier = mechEnv("MECHPI_SUMMARY_SERVICE_TIER") ?? "priority";
-    const r = await complete(model, { systemPrompt: "You summarize citation candidates conservatively from supplied text only. No hidden reasoning is needed. Output one concise, information-dense paragraph.", messages: [msg] }, { apiKey: auth.apiKey, headers: auth.headers, signal: ctx.signal, reasoning: "off", reasoningSummary: null, serviceTier, maxTokens, temperature: 0.2 });
-    return r.content.filter((x): x is { type: "text"; text: string } => x.type === "text").map(x => x.text).join("\n").trim() || fallback;
+    return await fastCompleteText(ctx, {
+      label: "citation-summary",
+      model,
+      systemPrompt: "You summarize citation candidates conservatively from supplied text only. No hidden reasoning is needed. Output one concise, information-dense paragraph.",
+      prompt: `Write one concise but adequate paragraph summarizing this paper for citation selection. Use only supplied ${sourceLabel}; do not invent facts. Include the main topic, method/evidence, and why it may be useful to cite.\n\nTitle: ${c.title}\nAuthors: ${c.authors.join(", ")}\nYear: ${c.year ?? ""}\nVenue: ${c.venue ?? ""}\nDOI/arXiv: ${c.doi ?? c.arxivId ?? ""}\n\n${sourceLabel}:\n${sourceText || c.abstract || "No abstract/text available."}`,
+      fallback,
+      timeoutMs: parsePositiveMs(mechEnv("MECHPI_SUMMARY_TIMEOUT_MS"), 8000),
+      maxTokens,
+      serviceTier,
+      temperature: 0.2,
+    });
   } catch { return fallback; }
 }
 
