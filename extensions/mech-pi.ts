@@ -3263,7 +3263,7 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
     if (!original.trim()) { this.voiceUsedForCurrentPrompt = false; return; }
     const seq = ++this.voiceRewriteSeq;
     this.status = "VOICE rewriting prompt…";
-    ctx.ui.setStatus("voice", ctx.ui.theme.fg("warning", "● voice rewriting prompt"));
+    ctx.ui.setStatus("voice", undefined);
     this.tui.requestRender();
     try {
       const rewritten = await rewriteVoicePromptText(ctx, original);
@@ -7006,7 +7006,8 @@ class VoiceInputController {
     this.audioPath = path.join(dir, "utterance.wav");
     const actual = this.materializeRecorder(spec, this.audioPath);
     this.recorderStderr = "";
-    this.ctx.ui.setStatus("voice", voiceRecordingStatus());
+    this.ctx.ui.setStatus("voice", undefined);
+    activePromptEditor?.beginVoiceDictation();
     this.recorder = spawn(actual.cmd, actual.args, { cwd: this.ctx.cwd, stdio: ["ignore", "ignore", "pipe"] });
     this.recorder.stderr?.on("data", d => this.recorderStderr += d.toString());
     this.recorder.on("error", err => { this.recorder = null; this.notifyError(err); });
@@ -7030,14 +7031,15 @@ class VoiceInputController {
     if (this.streamRecorder || this.streamStt) {
       if (options.submit !== undefined) this.streamSubmitOnStop = options.submit;
       if (options.cancel) this.streamCancelled = true;
-      this.ctx.ui.setStatus("voice", this.ctx.ui.theme.fg("warning", "● voice stopping"));
+      this.ctx.ui.setStatus("voice", undefined);
       this.streamRecorder?.kill("SIGINT");
       setTimeout(() => this.streamRecorder?.kill("SIGTERM"), 500);
       setTimeout(() => this.streamStt?.kill("SIGTERM"), 1200);
       return;
     }
     if (!this.recorder) return;
-    this.ctx.ui.setStatus("voice", this.ctx.ui.theme.fg("warning", "● voice transcribing"));
+    this.ctx.ui.setStatus("voice", undefined);
+    activePromptEditor?.endVoiceDictation(false, options.cancel === true);
     this.recorder.kill("SIGINT");
     setTimeout(() => this.recorder?.kill("SIGTERM"), 800);
   }
@@ -7062,7 +7064,7 @@ class VoiceInputController {
     if (modelName) sttArgs.push("--model-name", modelName);
     this.streamStt = spawn(python, sttArgs, { cwd: this.ctx.cwd, stdio: ["pipe", "pipe", "pipe"], env: mechRuntimeEnv() });
     this.streamRecorder = spawn(recorder.cmd, recorder.args, { cwd: this.ctx.cwd, stdio: ["ignore", "pipe", "pipe"], env: mechRuntimeEnv() });
-    this.ctx.ui.setStatus("voice", voiceRecordingStatus());
+    this.ctx.ui.setStatus("voice", undefined);
     this.streamRecorder.stdout?.pipe(this.streamStt.stdin!);
     this.streamRecorder.stderr?.on("data", d => this.streamStderr += d.toString());
     this.streamStt.stderr?.on("data", d => this.streamStderr += d.toString());
@@ -7089,7 +7091,7 @@ class VoiceInputController {
     try { event = JSON.parse(line); } catch { return; }
     if (event.type === "ready") {
       this.streamReady = true;
-      this.ctx.ui.setStatus("voice", voiceRecordingStatus());
+      this.ctx.ui.setStatus("voice", undefined);
       return;
     }
     if (event.type === "error") {
@@ -7187,7 +7189,7 @@ class VoiceInputController {
   }
 
   private async finishRecording(audio: string): Promise<void> {
-    this.ctx.ui.setStatus("voice", this.ctx.ui.theme.fg("warning", "● voice transcribing"));
+    this.ctx.ui.setStatus("voice", undefined);
     const text = (await this.transcribe(audio)).trim();
     if (text) {
       activePromptEditor?.insertVoiceText(text, false);
