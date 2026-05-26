@@ -15,7 +15,7 @@ The extension should help users:
 - edit equations in-terminal with vim-style controls and rendered LaTeX previews,
 - compile and preview manuscripts,
 - search notation/macros and catch lightweight LaTeX/mechanics consistency issues,
-- work comfortably outside tmux so terminal image previews render and scroll correctly.
+- work comfortably in native image-capable terminals so terminal image previews render and scroll correctly.
 
 ## Core principles
 
@@ -29,13 +29,13 @@ The extension should help users:
 
 ## Important UX goals
 
-`mech-pi` intentionally adds vim/tmux-like interaction because users may need to run pi outside tmux for inline image support.
+`mech-pi` intentionally adds vim-style prompt editing, prefix commands, and full-screen copy/navigation for inline image workflows.
 
 - Prompt editor: vim-style modal editing with INSERT, NORMAL, VISUAL, and VISUAL LINE modes.
 - The prompt mode display should remain concise: show mode names like `INSERT`, `NORMAL`, `VISUAL`, `VISUAL LINE`, or `PREFIX`, not long command hints.
 - `Enter` submits prompts; `Shift-Enter` inserts newlines; prompt backspace should delete exactly one character.
 - `Ctrl-a` then `]` enters full-screen copy/navigation mode over the rendered pi screen.
-- `Ctrl-a` then `c` creates a logical pane, `n`/`p` switch next/previous, and `1`...`9` jump directly to pane numbers.
+- `Ctrl-a` then `c` creates a pmux Kitty tab, `n`/`p` switch next/previous pmux tabs, and `1`...`9` jump directly to pmux tab numbers.
 - `Ctrl-a` then `[` returns from copy mode to the prompt.
 - Full-screen copy mode should support common non-insert vim movement and selection commands.
 - Yanking from full-screen copy mode should return to the prompt immediately in `NORMAL` mode so the user can paste with `p`/`P`.
