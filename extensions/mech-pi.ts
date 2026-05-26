@@ -3190,7 +3190,7 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
     return true;
   }
 
-  tryHandleTmuxPrefixInput(data: string): boolean {
+  tryHandlePanePrefixInput(data: string): boolean {
     if (this.tui.hasOverlay()) return false;
     return this.tryHandleCtrlAPrefixInput(data);
   }
@@ -7457,7 +7457,7 @@ export default function mechPi(pi: ExtensionAPI) {
     }));
     ctx.ui.onTerminalInput((data) => {
       if (activePromptEditor?.tryHandlePromptBackspaceInput(data)) return { consume: true };
-      return activePromptEditor?.tryHandleTmuxPrefixInput(data) ? { consume: true } : undefined;
+      return activePromptEditor?.tryHandlePanePrefixInput(data) ? { consume: true } : undefined;
     });
     if (await hasTexFileShallow(ctx.cwd)) {
       ctx.ui.setStatus("mech-pi", "mech-pi ready");
