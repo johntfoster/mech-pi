@@ -126,7 +126,7 @@ ask me skeptical mixture-theory questions about the mass transfer terms
 review section 3 like a thermodynamics referee
 ```
 
-In the citation picker, drilling into a candidate prefers an existing BibTeX `file` attachment, otherwise tries to download an accessible PDF to `/tmp`, extracts text, and summarizes it with `MECHPI_SUMMARY_MODEL` (default `openai/gpt-5.4`, no-thinking fast/priority mode). When a selected citation is added, any downloaded PDF is moved into `MECHPI_REFERENCES_PATH`/`MECHPI_REFERENCE_PATH` (default `~/Documents/References`) and the BibTeX `file` field records the path.
+In the citation picker, drilling into a candidate starts a fast background summary job. It prefers an existing BibTeX `file` attachment, otherwise tries to download an accessible PDF to `/tmp`, extracts text, and summarizes it with `MECHPI_SUMMARY_MODEL` (default `openai/gpt-5.4`, no-thinking fast/priority mode). When a selected citation is added, any downloaded PDF is moved into `MECHPI_REFERENCES_PATH`/`MECHPI_REFERENCE_PATH` (default `~/Documents/References`) and the BibTeX `file` field records the path.
 
 ## Manuscript and equation editing
 
