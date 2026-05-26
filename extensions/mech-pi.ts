@@ -4914,9 +4914,24 @@ function candidateLine(c: CitationCandidate, selected: boolean, checked: boolean
 class CitationPicker {
   private selected = 0;
   private detail = false;
-  private loadingSummary = false;
+  private loadingSummaries = new Set<number>();
   private checked = new Set<number>();
   constructor(private tui: TUI, private theme: any, private candidates: CitationCandidate[], private summarize: (c: CitationCandidate, openWeb?: boolean) => Promise<string>, private done: (c: CitationCandidate[] | null) => void) {}
+  private startSummary(index: number, openWeb: boolean): void {
+    if (this.loadingSummaries.has(index)) return;
+    const c = this.candidates[index];
+    if (!c) return;
+    this.loadingSummaries.add(index);
+    this.tui.requestRender();
+    runBackgroundJob(`citation-summary:${index}`, async () => {
+      try {
+        c.summary = await this.summarize(c, openWeb);
+      } finally {
+        this.loadingSummaries.delete(index);
+        this.tui.requestRender();
+      }
+    });
+  }
   render(width: number): string[] {
     const lines: string[] = [];
     lines.push(this.theme.fg("accent", "─".repeat(width)));
@@ -4932,7 +4947,7 @@ class CitationPicker {
       lines.push(truncateToWidth(`${c.venue ?? ""}${c.doi ? ` DOI: ${c.doi}` : c.arxivId ? ` arXiv: ${c.arxivId}` : ""}`, width));
       lines.push(truncateToWidth(this.theme.fg(c.status === "verified" || c.status === "local" ? "success" : c.status === "manual" ? "warning" : "warning", `status: ${c.status}; source: ${c.source}`), width));
       lines.push("");
-      for (const p of wrapPlain(c.summary ?? (this.loadingSummary ? "Generating summary..." : "No summary yet."), width)) lines.push(p);
+      for (const p of wrapPlain(c.summary ?? (this.loadingSummaries.has(this.selected) ? "Generating summary in the background..." : "No summary yet."), width)) lines.push(p);
       lines.push("");
       for (const n of c.notes.slice(0, 5)) lines.push(truncateToWidth(this.theme.fg("dim", `• ${n}`), width));
     }
@@ -4956,11 +4971,7 @@ class CitationPicker {
     if (this.detail) {
       if (ch === "h" || matchesKey(data, Key.left)) { this.detail = false; this.tui.requestRender(); return; }
       if (ch === "l" || matchesKey(data, Key.right)) {
-        const c = this.candidates[this.selected];
-        if (!this.loadingSummary) {
-          this.loadingSummary = true;
-          this.summarize(c, true).then(s => { c.summary = s; }).finally(() => { this.loadingSummary = false; this.tui.requestRender(); });
-        }
+        this.startSummary(this.selected, true);
         return;
       }
       return;
@@ -4969,11 +4980,7 @@ class CitationPicker {
     else if (ch === "k" || matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
     else if (ch === "l" || matchesKey(data, Key.right)) {
       this.detail = true;
-      const c = this.candidates[this.selected];
-      if (!c.summary && !this.loadingSummary) {
-        this.loadingSummary = true;
-        this.summarize(c, true).then(s => { c.summary = s; }).finally(() => { this.loadingSummary = false; this.tui.requestRender(); });
-      }
+      if (!this.candidates[this.selected]?.summary) this.startSummary(this.selected, false);
     }
     this.tui.requestRender();
   }
