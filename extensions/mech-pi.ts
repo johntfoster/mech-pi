@@ -75,17 +75,6 @@ const MECH_RAG_SESSION_ENTRY = "mech-pi-rag";
 
 type PersistedMechRagDefault = { defaultEnabled?: unknown; enabled?: unknown };
 
-let pmuxShortcutsAvailable = false;
-
-function pmuxShortcutCommand(ch: string | undefined): string {
-  if (ch === "c" || ch === "S" || ch === "P") return "/pmux-new";
-  if (ch === "n" || ch === "l" || ch === "j") return "/pmux-next";
-  if (ch === "p" || ch === "h" || ch === "k") return "/pmux-prev";
-  if (ch === "x") return "/pmux-kill";
-  if (ch === "0") return "/pmux-select 10";
-  return /^[1-9]$/.test(ch ?? "") ? `/pmux-select ${ch}` : "";
-}
-
 function mechRagDefaultPath(cwd: string): string {
   return path.join(path.resolve(cwd), ".mechpi", "rag.json");
 }
@@ -3119,17 +3108,6 @@ class MechPiModalPromptEditor extends MechPiModalTextEditor {
     const lines = super.render(width);
     if (!this.isMechFuzzyCompletionPrompt() || !this.isAutocompleteOpen()) return lines;
     return lines.map(line => /^\s*→\s/.test(stripTerminalEscapes(line)) ? highlightSelectedAutocompleteLine(this.uiTheme, line, width) : line);
-  }
-
-  protected override handleCtrlAPrefixCommand(ch: string | undefined, data: string): boolean {
-    if (super.handleCtrlAPrefixCommand(ch, data)) return true;
-    const command = pmuxShortcutsAvailable ? pmuxShortcutCommand(ch) : "";
-    if (!command) return false;
-    this.status = `PREFIX ${ch}`;
-    this.enterInsert();
-    this.onSubmit?.(command);
-    this.tui.requestRender();
-    return true;
   }
 
   handleInput(data: string): void {
@@ -7385,8 +7363,8 @@ function handleMechRagModeCommand(pi: ExtensionAPI, args: string, ctx: Extension
   const vectorStore = fss.existsSync(mechIngestStorePath(ctx.cwd));
   const currentlyDisabled = mechRagDisabled(ctx, Boolean(pi.getFlag("no-mech-rag")));
   if (cmd === "status") {
-    const paneDefault = mechRagDefaultEnabled(ctx.cwd) ? "on" : "off";
-    ctx.ui.notify(`Mech-pi RAG is ${currentlyDisabled ? "off" : "on"} for this session. pmux new-tab default: ${paneDefault}. Vector store: ${vectorStore ? "found" : "missing"}.`, currentlyDisabled ? "warning" : "info");
+    const defaultMode = mechRagDefaultEnabled(ctx.cwd) ? "on" : "off";
+    ctx.ui.notify(`Mech-pi RAG is ${currentlyDisabled ? "off" : "on"} for this session. Project default for new sessions: ${defaultMode}. Vector store: ${vectorStore ? "found" : "missing"}.`, currentlyDisabled ? "warning" : "info");
     return true;
   }
   const enable = cmd === "on";
@@ -7395,7 +7373,7 @@ function handleMechRagModeCommand(pi: ExtensionAPI, args: string, ctx: Extension
   if (enable) enableMechRetrieveTool(pi);
   else disableMechRetrieveTool(pi);
   const missing = enable && !vectorStore ? " No vector store exists yet; run /mechingest <keywords> to build one." : "";
-  ctx.ui.notify(`Mech-pi RAG ${enable ? "enabled" : "disabled"} for this session and future pmux tabs.${missing}`, enable && !vectorStore ? "warning" : "info");
+  ctx.ui.notify(`Mech-pi RAG ${enable ? "enabled" : "disabled"} for this session and future sessions in this project.${missing}`, enable && !vectorStore ? "warning" : "info");
   return true;
 }
 
@@ -7405,8 +7383,6 @@ export default function mechPi(pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     refreshMechPiRcConfig(ctx.cwd);
-    const commandNames = new Set(pi.getCommands().map(command => command.name));
-    pmuxShortcutsAvailable = commandNames.has("pmux-select") && commandNames.has("pmux-new");
     latexPreviewCwd = ctx.cwd;
     if (mechRagDisabled(ctx, Boolean(pi.getFlag("no-mech-rag")))) disableMechRetrieveTool(pi);
     else enableMechRetrieveTool(pi);
