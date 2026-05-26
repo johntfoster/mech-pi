@@ -1,6 +1,6 @@
 # Prompt and copy-mode keybindings
 
-`mech-pi` replaces pi's default prompt editor with a vim-style modal prompt editor plus a tmux-like full-screen copy mode.
+`mech-pi` replaces pi's default prompt editor with a vim-style modal prompt editor plus a prefix-driven full-screen copy mode.
 
 ## Prompt modes
 
@@ -18,10 +18,10 @@ Default typing mode. After commands, dialogs, and assistant responses return foc
 - `Up` / `Down`: cycle persistent prompt history; if text is already typed, only prompts with that prefix are shown, e.g. `/mechaddcite` filters to previous `/mechaddcite...` prompts
 - In mech-pi fuzzy completions (`/mechedit`, `/mecheqedit`, `/mechciteedit`, `/mechgotocite`, `/mechingest`), matches appear below the prompt with the best match highlighted; `Tab`/`Down` and `Shift-Tab`/`Up` move the highlight, and `Enter` accepts the highlighted match and sends the command.
 - optional push-to-talk: set `MECHPI_VOICE_SPACE_HOLD=1`, then hold `Space` on an empty prompt; release `Space` to stop after a short grace period
-- `Ctrl-a`: start a tmux-like prefix; the next key must arrive within 2 seconds
-- `Ctrl-a` then `c`: create pane 2, pane 3, etc. after the current session/pane 1
-- `Ctrl-a` then `n` / `p`: switch to next/previous mech-pi logical pane
-- `Ctrl-a` then `1` ... `9`: jump directly to that numbered mech-pi logical pane
+- `Ctrl-a`: start a prefix; the next key must arrive within 2 seconds
+- `Ctrl-a` then `c`: create a new pmux Kitty tab
+- `Ctrl-a` then `n` / `p`: switch to next/previous pmux tab
+- `Ctrl-a` then `1` ... `9`: jump directly to that numbered pmux tab
 - `Ctrl-a` then `]`: enter full-screen copy mode
 
 ### NORMAL mode
@@ -44,10 +44,10 @@ Vim-style prompt editing.
 - `yy`: yank current line
 - `p`, `P`: paste after/before
 - `u`: undo
-- `Ctrl-a`: start a tmux-like prefix; the next key must arrive within 2 seconds
-- `Ctrl-a` then `c`: create pane 2, pane 3, etc. after the current session/pane 1
-- `Ctrl-a` then `n` / `p`: switch to next/previous mech-pi logical pane
-- `Ctrl-a` then `1` ... `9`: jump directly to that numbered mech-pi logical pane
+- `Ctrl-a`: start a prefix; the next key must arrive within 2 seconds
+- `Ctrl-a` then `c`: create a new pmux Kitty tab
+- `Ctrl-a` then `n` / `p`: switch to next/previous pmux tab
+- `Ctrl-a` then `1` ... `9`: jump directly to that numbered pmux tab
 - `Ctrl-a` then `]`: enter full-screen copy mode
 
 ### VISUAL / VISUAL LINE mode in the prompt
@@ -84,13 +84,13 @@ Yanks are also sent to the system clipboard when `wl-copy`, `xclip`, or `xsel` i
 
 See `docs/tools-and-commands.md` for STT backend environment variables.
 
-## Tmux-like full-screen copy mode
+## Full-screen copy mode
 
-Use `Ctrl-a` then `]` from the prompt to leave the prompt and enter a full-screen copy/navigation mode over the current rendered pi screen. This is intended as a tmux-copy-mode replacement when running `mech-pi` directly in Kitty/Ghostty/WezTerm/iTerm2 for terminal image support.
+Use `Ctrl-a` then `]` from the prompt to leave the prompt and enter a full-screen copy/navigation mode over the current rendered pi screen.
 
 The key sequence is prefix-style: press `Ctrl-a`, release it, then press the command key within 2 seconds. If your terminal batches the keys as `Ctrl-a]`, `Ctrl-a c`, `Ctrl-a n`, or similar, that is also handled. If you keep holding Ctrl and send `Ctrl-]`, that is handled too.
 
-Prompt prefix commands are `c` for a new mech-pi logical pane, `n`/`p` for next/previous pane, `1`...`9` for direct pane selection, and `]` for full-screen copy mode. Logical panes are backed by pi session files and are switched in-place rather than drawn as simultaneous splits.
+Prompt prefix commands are `c` for a new pmux Kitty tab, `n`/`p` for next/previous pmux tab, `1`...`9` for direct pmux tab selection, and `]` for full-screen copy mode.
 
 ### COPY mode
 
