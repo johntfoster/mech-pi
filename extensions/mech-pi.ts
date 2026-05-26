@@ -84,8 +84,44 @@ type PersistedMechPaneState = {
 
 type ExternalPiPane = { id?: unknown; order?: unknown; sessionFile?: unknown; cwd?: unknown };
 type ExternalPiPaneStore = { panes?: unknown; activeId?: unknown };
+type MechPaneShortcutCommandPrefix = "mechpane" | "pmux" | "pi-pane";
 
-let mechPaneShortcutCommandPrefix: "mechpane" | "pmux" | "pi-pane" = "mechpane";
+let mechPaneShortcutCommandPrefix: MechPaneShortcutCommandPrefix = "mechpane";
+
+function paneShortcutOverride(): MechPaneShortcutCommandPrefix | undefined {
+  const raw = (mechEnv("MECHPI_PANE_SHORTCUTS") ?? mechEnv("MECHPI_PANE_BACKEND") ?? "").trim().toLowerCase();
+  if (["pmux", "kitty"].includes(raw)) return "pmux";
+  if (["pi-pane", "pipane", "pi"].includes(raw)) return "pi-pane";
+  if (["mechpane", "mech-pi", "mechpi", "logical"].includes(raw)) return "mechpane";
+  return undefined;
+}
+
+function nativePmuxEnvironment(): boolean {
+  const backend = (mechEnv("PMUX_BACKEND") ?? "").trim().toLowerCase();
+  if (backend === "kitty") return true;
+  // pmux controls native Kitty tabs.  When pi is running inside tmux, KITTY_WINDOW_ID
+  // is usually inherited from the outer terminal but pmux hotkeys should not steal the
+  // tmux-like mech-pi pane shortcuts unless the user explicitly opts in above.
+  return Boolean(mechEnv("KITTY_WINDOW_ID")) && !mechEnv("TMUX");
+}
+
+function chooseMechPaneShortcutPrefix(commandNames: Set<string>): MechPaneShortcutCommandPrefix {
+  const hasPmux = commandNames.has("pmux-select") && commandNames.has("pmux-new");
+  const hasPiPane = commandNames.has("pi-pane-select") && commandNames.has("pi-pane-new");
+  const override = paneShortcutOverride();
+  if (override === "pmux") return hasPmux ? "pmux" : hasPiPane ? "pi-pane" : "mechpane";
+  if (override === "pi-pane") return hasPiPane ? "pi-pane" : "mechpane";
+  if (override === "mechpane") return "mechpane";
+  if (hasPmux && nativePmuxEnvironment()) return "pmux";
+  return hasPiPane ? "pi-pane" : "mechpane";
+}
+
+function shouldUsePmuxExternalStore(): boolean {
+  const override = paneShortcutOverride();
+  if (override === "pmux") return true;
+  if (override === "mechpane" || override === "pi-pane") return false;
+  return nativePmuxEnvironment();
+}
 
 const globalMechPaneGroups: Map<string, MechPaneState> = (() => {
   const g = globalThis as typeof globalThis & { __mechPiPaneGroups?: Map<string, MechPaneState> };
@@ -118,7 +154,7 @@ function defaultMechPaneState(cwd: string): MechPaneState {
 
 function externalPiPaneStore(): ExternalPiPaneStore | undefined {
   const g = globalThis as typeof globalThis & { __pmuxExtensionStore_v1?: ExternalPiPaneStore; __piTmuxPanesExtensionStore_v1?: ExternalPiPaneStore };
-  const store = g.__pmuxExtensionStore_v1 ?? g.__piTmuxPanesExtensionStore_v1;
+  const store = (shouldUsePmuxExternalStore() ? g.__pmuxExtensionStore_v1 : undefined) ?? g.__piTmuxPanesExtensionStore_v1;
   return store && Array.isArray(store.panes) ? store : undefined;
 }
 
@@ -7565,9 +7601,7 @@ export default function mechPi(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     refreshMechPiRcConfig(ctx.cwd);
     const commandNames = new Set(pi.getCommands().map(command => command.name));
-    mechPaneShortcutCommandPrefix = commandNames.has("pmux-select") && commandNames.has("pmux-new")
-      ? "pmux"
-      : commandNames.has("pi-pane-select") && commandNames.has("pi-pane-new") ? "pi-pane" : "mechpane";
+    mechPaneShortcutCommandPrefix = chooseMechPaneShortcutPrefix(commandNames);
     mechPaneState(ctx.cwd);
     rememberMechPaneSession(ctx.cwd, ctx.sessionManager.getSessionFile());
     latexPreviewCwd = ctx.cwd;
