@@ -165,7 +165,7 @@ See [docs/equation-editor.md](docs/equation-editor.md).
 
 ## Terminal images
 
-Inline equation previews work best in an image-capable terminal such as Kitty, Ghostty, WezTerm, or iTerm2. pmux uses native Kitty tabs, so run pi directly in Kitty rather than inside tmux.
+Inline equation previews work best in an image-capable terminal such as Kitty, Ghostty, WezTerm, or iTerm2. pmux uses native Kitty tabs, so run pi directly in Kitty.
 
 Full notes: [docs/terminal-images.md](docs/terminal-images.md).
 
