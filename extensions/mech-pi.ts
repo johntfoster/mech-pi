@@ -4145,10 +4145,17 @@ async function generateCommitMessage(ctx: ExtensionContext, root: string, rels: 
     if (!auth.ok || !auth.apiKey) return fallback;
     const stat = await run("git", ["-C", root, "diff", "--cached", "--stat", "--", ...rels], ctx.cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
     const diff = await run("git", ["-C", root, "diff", "--cached", "--unified=1", "--", ...rels], ctx.cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
-    const msg: Message = { role: "user", timestamp: Date.now(), content: [{ type: "text", text: `Write a concise git commit subject line only (max 72 chars). No markdown, no quotes. Reason: ${reason}\nFiles: ${rels.join(", ")}\n\nSTAT:\n${stat.stdout.slice(0, 1200)}\n\nDIFF:\n${diff.stdout.slice(0, 5000)}` }] };
-    const r = await complete(model, { systemPrompt: "You write terse, accurate git commit subject lines. Output one line only.", messages: [msg] }, { apiKey: auth.apiKey, headers: auth.headers, signal: ctx.signal });
-    const text = r.content.filter((x): x is { type: "text"; text: string } => x.type === "text").map(x => x.text).join(" ").replace(/[\r\n]+/g, " ").replace(/^['\"]|['\"]$/g, "").trim();
-    return (text || fallback).slice(0, 100);
+    const text = await fastCompleteText(ctx, {
+      label: "commit-message",
+      model,
+      systemPrompt: "You write terse, accurate git commit subject lines. Output one line only.",
+      prompt: `Write a concise git commit subject line only (max 72 chars). No markdown, no quotes. Reason: ${reason}\nFiles: ${rels.join(", ")}\n\nSTAT:\n${stat.stdout.slice(0, 1200)}\n\nDIFF:\n${diff.stdout.slice(0, 5000)}`,
+      fallback,
+      timeoutMs: parsePositiveMs(mechEnv("MECHPI_COMMIT_TIMEOUT_MS"), 2500),
+      maxTokens: 80,
+      temperature: 0,
+    });
+    return (text || fallback).replace(/[\r\n]+/g, " ").replace(/^['\"]|['\"]$/g, "").trim().slice(0, 100);
   } catch {
     return fallback;
   }
