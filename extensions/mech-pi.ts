@@ -4141,8 +4141,6 @@ async function generateCommitMessage(ctx: ExtensionContext, root: string, rels: 
   try {
     const model = await commitMessageModel(ctx);
     if (!model) return fallback;
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-    if (!auth.ok || !auth.apiKey) return fallback;
     const stat = await run("git", ["-C", root, "diff", "--cached", "--stat", "--", ...rels], ctx.cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
     const diff = await run("git", ["-C", root, "diff", "--cached", "--unified=1", "--", ...rels], ctx.cwd).catch(() => ({ code: 1, stdout: "", stderr: "" }));
     const text = await fastCompleteText(ctx, {
