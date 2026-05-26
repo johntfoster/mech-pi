@@ -4047,6 +4047,72 @@ async function summaryModel(ctx: ExtensionContext): Promise<any | undefined> {
   return await configuredModelFromSpec(ctx, mechEnv("MECHPI_SUMMARY_MODEL") ?? "openai/gpt-5.4");
 }
 
+type FastCompletionOptions = {
+  label: string;
+  model?: any;
+  systemPrompt: string;
+  prompt: string;
+  fallback: string;
+  timeoutMs?: number;
+  maxTokens?: number;
+  temperature?: number;
+  serviceTier?: string;
+};
+
+function parsePositiveMs(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function textFromCompletionResponse(r: Awaited<ReturnType<typeof complete>>): string {
+  return r.content.filter((x): x is { type: "text"; text: string } => x.type === "text").map(x => x.text).join("\n").trim();
+}
+
+async function fastCompleteText(ctx: ExtensionContext, options: FastCompletionOptions): Promise<string> {
+  const fallback = options.fallback;
+  try {
+    const model = options.model ?? ctx.model;
+    if (!model) return fallback;
+    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+    if (!auth.ok || !auth.apiKey) return fallback;
+
+    const controller = new AbortController();
+    const abortFromParent = () => controller.abort();
+    if (ctx.signal?.aborted) controller.abort();
+    else ctx.signal?.addEventListener("abort", abortFromParent, { once: true });
+    const timeout = setTimeout(() => controller.abort(), Math.max(250, options.timeoutMs ?? 8000));
+    timeout.unref?.();
+
+    try {
+      const msg: Message = { role: "user", timestamp: Date.now(), content: [{ type: "text", text: options.prompt }] };
+      const requestOptions: any = {
+        apiKey: auth.apiKey,
+        headers: auth.headers,
+        signal: controller.signal,
+        reasoning: "off",
+        reasoningSummary: null,
+        maxTokens: options.maxTokens,
+        temperature: options.temperature ?? 0,
+      };
+      if (options.serviceTier) requestOptions.serviceTier = options.serviceTier;
+      const r = await complete(model, { systemPrompt: options.systemPrompt, messages: [msg] }, requestOptions);
+      if (r.stopReason === "aborted") return fallback;
+      return textFromCompletionResponse(r) || fallback;
+    } finally {
+      clearTimeout(timeout);
+      ctx.signal?.removeEventListener("abort", abortFromParent);
+    }
+  } catch {
+    return fallback;
+  }
+}
+
+function runBackgroundJob(label: string, job: () => Promise<void>): void {
+  void job().catch((error) => {
+    console.warn(`[mech-pi] background job ${label} failed:`, error);
+  });
+}
+
 async function voiceRewriteModel(ctx: ExtensionContext): Promise<any | undefined> {
   return await configuredModelFromSpec(ctx, mechEnv("MECHPI_VOICE_REWRITE_MODEL") ?? mechEnv("MECHPI_MINI_MODEL") ?? "openai/gpt-4o-mini");
 }
