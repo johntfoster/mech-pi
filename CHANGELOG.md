@@ -7,7 +7,7 @@
 - Added a vim-style modal prompt editor with `INSERT`, `NORMAL`, `VISUAL`, and `VISUAL LINE` modes.
 - Added persistent prompt history in `.mechpi/prompt-history.json`, with prefix-filtered `Up`/`Down` browsing and `MECHPI_PROMPT_HISTORY_LIMIT`.
 - Added prompt and equation-editor `J` line-join behavior.
-- Added tmux-like full-screen copy mode (`Ctrl-a` then `]`) with vim-style movement, visual selections, yanking, paste back to prompt, and image-aware linewise copying.
+- Added prefix-driven full-screen copy mode (`Ctrl-a` then `]`) with vim-style movement, visual selections, yanking, paste back to prompt, and image-aware linewise copying.
 - Standardized focus return behavior: most commands/dialogs return to prompt `INSERT`; copy mode returns to `NORMAL` for immediate `p`/`P` paste.
 
 ### Voice input
