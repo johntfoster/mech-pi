@@ -78,9 +78,11 @@ type PersistedMechRagDefault = { defaultEnabled?: unknown; enabled?: unknown };
 let pmuxShortcutsAvailable = false;
 
 function pmuxShortcutCommand(ch: string | undefined): string {
-  if (ch === "c") return "/pmux-new";
-  if (ch === "n") return "/pmux-next";
-  if (ch === "p") return "/pmux-prev";
+  if (ch === "c" || ch === "S" || ch === "P") return "/pmux-new";
+  if (ch === "n" || ch === "l" || ch === "j") return "/pmux-next";
+  if (ch === "p" || ch === "h" || ch === "k") return "/pmux-prev";
+  if (ch === "x") return "/pmux-kill";
+  if (ch === "0") return "/pmux-select 10";
   return /^[1-9]$/.test(ch ?? "") ? `/pmux-select ${ch}` : "";
 }
 
@@ -1683,7 +1685,7 @@ function readTextFromSystemClipboard(): string | null {
 
 const CTRL_A_PREFIX_TIMEOUT_MS = 2000;
 
-type CtrlAPrefixCommand = "]" | "[" | "c" | "n" | "p" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9";
+type CtrlAPrefixCommand = "]" | "[" | "c" | "n" | "p" | "x" | "h" | "j" | "k" | "l" | "S" | "P" | "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9";
 
 function splitCtrlAPrefix(data: string): string | null {
   if (data === "\x01" || matchesKey(data, Key.ctrl("a"))) return "";
