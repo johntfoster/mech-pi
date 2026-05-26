@@ -35,7 +35,6 @@ The extension should help users:
 - The prompt mode display should remain concise: show mode names like `INSERT`, `NORMAL`, `VISUAL`, `VISUAL LINE`, or `PREFIX`, not long command hints.
 - `Enter` submits prompts; `Shift-Enter` inserts newlines; prompt backspace should delete exactly one character.
 - `Ctrl-a` then `]` enters full-screen copy/navigation mode over the rendered pi screen.
-- `Ctrl-a` then `c` creates a pmux Kitty tab, `n`/`p` switch next/previous pmux tabs, `1`...`9` jump directly to pmux tab numbers, and `x` closes the current pmux tab after confirmation.
 - `Ctrl-a` then `[` returns from copy mode to the prompt.
 - Full-screen copy mode should support common non-insert vim movement and selection commands.
 - Yanking from full-screen copy mode should return to the prompt immediately in `NORMAL` mode so the user can paste with `p`/`P`.
