@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/johntfoster/pi-extension-agent-claim-schema.json",
+  "title": "Agent claim event",
+  "type": "object",
+  "required": [
+    "version",
+    "type",
+    "repo",
+    "issue",
+    "agent_id",
+    "agent_label",
+    "run_id",
+    "status"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "type": {
+      "enum": [
+        "claim",
+        "heartbeat",
+        "release",
+        "blocked",
+        "completed",
+        "superseded"
+      ]
+    },
+    "repo": {
+      "type": "string",
+      "pattern": "^[^/]+/[^/]+$"
+    },
+    "issue": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "agent_id": {
+      "type": "string"
+    },
+    "agent_label": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "branch": {
+      "type": "string"
+    },
+    "claimed_at": {
+      "type": "string"
+    },
+    "heartbeat_at": {
+      "type": "string"
+    },
+    "released_at": {
+      "type": "string"
+    },
+    "lease_expires_at": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "active",
+        "released",
+        "blocked",
+        "completed",
+        "superseded"
+      ]
+    },
+    "notes": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}

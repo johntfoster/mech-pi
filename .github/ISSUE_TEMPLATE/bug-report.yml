@@ -1,0 +1,23 @@
+name: Bug report
+description: Report incorrect behavior in mech-pi
+title: "Bug: "
+labels: ["bug", "agent:ready"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+  - type: textarea
+    id: verification
+    attributes:
+      label: Suggested verification

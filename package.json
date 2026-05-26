@@ -2,7 +2,13 @@
   "name": "mech-pi",
   "version": "0.1.0",
   "description": "A pi extension package for mechanics-aware LaTeX paper development.",
-  "keywords": ["pi-package", "latex", "mechanics", "continuum-mechanics", "research"],
+  "keywords": [
+    "pi-package",
+    "latex",
+    "mechanics",
+    "continuum-mechanics",
+    "research"
+  ],
   "homepage": "https://github.com/johntfoster/mech-pi#readme",
   "repository": {
     "type": "git",
@@ -14,9 +20,15 @@
   "type": "module",
   "license": "MIT",
   "pi": {
-    "extensions": ["./extensions"],
-    "skills": ["./skills"],
-    "prompts": ["./prompts"]
+    "extensions": [
+      "./extensions"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./prompts"
+    ]
   },
   "scripts": {
     "demo": "node scripts/demo-summary.mjs",

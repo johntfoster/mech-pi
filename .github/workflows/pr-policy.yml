@@ -1,0 +1,44 @@
+name: PR Policy
+
+on:
+  workflow_call:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled, ready_for_review, converted_to_draft]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Enforce issue branch and PR metadata
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) { core.notice('No pull_request payload; skipping.'); return; }
+            const errors = [];
+            const head = pr.head.ref || '';
+            const base = pr.base.ref || '';
+            const body = (pr.body || '').replace(/```[\s\S]*?```/g, ' ').replace(/`[^`\n]*`/g, ' ');
+            const labels = (pr.labels || []).map((label) => label.name);
+            const branchPattern = /^(fix|feature|issue)\/(?:issue-)?(\d+)(?:-[a-z0-9]+)+$/;
+            const issueRefPattern = /(?:Fixes|Closes|Resolves|Refs)\s+#(\d+)/gi;
+            const branchMatch = head.match(branchPattern);
+            if (!branchMatch) errors.push('Head branch must match issue/<n>-slug, fix/<n>-slug, or feature/<n>-slug.');
+            if (base !== 'main') errors.push('PR base branch must be main.');
+            if (/(?:Fixes|Closes|Resolves|Refs)\s+#(?!\d)/i.test(body)) errors.push('PR body contains a raw issue placeholder such as `Refs #`; replace it with `Refs #<n>`.');
+            const refs = [...body.matchAll(issueRefPattern)].map((m) => Number(m[1])).filter(Boolean);
+            const uniqueRefs = [...new Set(refs)];
+            if (uniqueRefs.length !== 1) errors.push('PR body must contain exactly one same-repo issue reference: Refs/Fixes/Closes/Resolves #<n>.');
+            const branchIssue = branchMatch ? Number(branchMatch[2]) : null;
+            const linkedIssue = uniqueRefs.length === 1 ? uniqueRefs[0] : null;
+            if (branchIssue && linkedIssue && branchIssue !== linkedIssue) errors.push(`Branch issue #${branchIssue} must match PR-linked issue #${linkedIssue}.`);
+            if (labels.includes('autofix-ok') && pr.draft) errors.push('autofix-ok is not allowed on draft PRs.');
+            if (errors.length) core.setFailed(errors.join('\n'));
+            else core.notice('PR policy passed.');

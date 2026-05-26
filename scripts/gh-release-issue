@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=/dev/null
+source "$ROOT_DIR/lib/agent_issue_workflow.sh"
+agent_require_tools
+
+AGENT_ISSUE_NUMBER=
+run_id=
+type='released'
+reason='Released by operator'
+notes=
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --issue|--issue-number)
+      AGENT_ISSUE_NUMBER=${2:-}; shift 2 ;;
+    --run-id)
+      run_id=${2:-}; shift 2 ;;
+    --type)
+      type=${2:-}; shift 2 ;;
+    --reason)
+      reason=${2:-}; shift 2 ;;
+    --notes)
+      notes=${2:-}; shift 2 ;;
+    --*)
+      agent_fail "Unknown option: $1" 2 '{}' ;;
+    *)
+      if [[ -z "$AGENT_ISSUE_NUMBER" ]]; then AGENT_ISSUE_NUMBER=$1; shift; else agent_fail "Unexpected argument: $1" 2 '{}'; fi ;;
+  esac
+done
+export AGENT_ISSUE_NUMBER
+[[ -n "$run_id" ]] || agent_fail 'run-id is required.' 2 '{}'
+
+case "$type" in
+  released) event_type='release'; status='released' ;;
+  blocked) event_type='blocked'; status='blocked' ;;
+  completed) event_type='completed'; status='completed' ;;
+  superseded) event_type='superseded'; status='superseded' ;;
+  *) agent_fail 'type must be one of released, blocked, completed, superseded.' 2 '{}' ;;
+esac
+
+repo=$(agent_repo)
+issue_number=$(agent_issue_number)
+agent_id=$(agent_identity_id)
+agent_label=$(agent_identity_label)
+issue=$(agent_fetch_issue "$repo" "$issue_number")
+comments=$(agent_fetch_comments "$repo" "$issue_number")
+events=$(agent_collect_events <<<"$comments")
+active_claims=$(jq -c --arg now "$(agent_now)" '
+  def is_terminal: (.type // "") as $t | ($t == "release" or $t == "blocked" or $t == "completed" or $t == "superseded");
+  reduce .[] as $event ({claims:{}, terminals:{}};
+    ($event.run_id // "") as $run
+    | if $run == "" then .
+      elif ($event.type // "") == "claim" then .claims[$run] = $event
+      elif ($event.type // "") == "heartbeat" and (.claims[$run] != null) then .claims[$run] = (.claims[$run] + {lease_expires_at: ($event.lease_expires_at // .claims[$run].lease_expires_at), last_event: $event})
+      elif ($event | is_terminal) then .terminals[$run] = true
+      else . end)
+  | [(.claims | to_entries[]) | select(.key as $run | (.terminals[$run] // false) | not) | .value]
+  | map(select((.lease_expires_at // "") > $now))
+  | sort_by(.claimed_at // "", ._comment_id // 0)
+' <<<"$events")
+requested_claim=$(jq -c --arg run_id "$run_id" 'map(select((.run_id // "") == $run_id)) | if length == 0 then null else .[-1] end' <<<"$active_claims")
+winning_claim=$(jq -c 'if length == 0 then null else .[-1] end' <<<"$active_claims")
+if [[ "$requested_claim" == 'null' ]] && [[ "$winning_claim" != 'null' ]]; then
+  agent_fail 'Another agent currently owns the active claim.' 5 "{\"issue\":$issue_number,\"run_id\":$(jq -Rn --arg v "$run_id" '$v')}"
+fi
+
+released_at=$(agent_now)
+if [[ -n "${notes:-}" ]]; then
+  payload=$(jq -n --arg repo "$repo" --argjson issue "$issue_number" --arg agent_id "$agent_id" --arg agent_label "$agent_label" --arg run_id "$run_id" --arg released_at "$released_at" --arg status "$status" --arg event_type "$event_type" --arg reason "$reason" --arg notes "$notes" '{version:1,type:$event_type,repo:$repo,issue:$issue,agent_id:$agent_id,agent_label:$agent_label,run_id:$run_id,released_at:$released_at,status:$status,reason:$reason,notes:$notes}')
+else
+  payload=$(jq -n --arg repo "$repo" --argjson issue "$issue_number" --arg agent_id "$agent_id" --arg agent_label "$agent_label" --arg run_id "$run_id" --arg released_at "$released_at" --arg status "$status" --arg event_type "$event_type" --arg reason "$reason" '{version:1,type:$event_type,repo:$repo,issue:$issue,agent_id:$agent_id,agent_label:$agent_label,run_id:$run_id,released_at:$released_at,status:$status,reason:$reason}')
+fi
+comment=$(agent_post_comment "$repo" "$issue_number" "$(agent_json_block "$payload")")
+labels=$(jq -c --arg claimed "$LABEL_CLAIMED" --arg review "$LABEL_REVIEW" --arg blocked "$LABEL_BLOCKED" --arg ready "$LABEL_READY" --arg merged "$LABEL_MERGED" --arg type "$type" --arg state "$(jq -r '.state // empty' <<<"$issue")" '
+  [.labels[]? | if type=="string" then . else .name end]
+  | map(select(. != $claimed and . != $review))
+  | if $type == "blocked" then . + [$blocked]
+    elif $state == "open" then (map(select(. != $blocked)) + [$ready])
+    else . end
+  | if $type == "completed" then . + [$merged] else . end
+  | unique
+' <<<"$issue")
+agent_set_labels "$repo" "$issue_number" "$labels" >/dev/null
+
+jq -n --argjson issue "$issue_number" --arg run_id "$run_id" --argjson comment_id "$(jq -r '.id // 0' <<<"$comment")" --arg type "$type" --arg released_at "$released_at" '{ok:true,issue:$issue,run_id:$run_id,comment_id:$comment_id,type:$type,released_at:$released_at}'

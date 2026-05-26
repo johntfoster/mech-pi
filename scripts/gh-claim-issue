@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=/dev/null
+source "$ROOT_DIR/lib/agent_issue_workflow.sh"
+agent_require_tools
+
+AGENT_ISSUE_NUMBER=
+AGENT_TTL_SECONDS=${DEFAULT_TTL_SECONDS}
+agent_label_override=
+branch_override=
+notes='Starting work'
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --issue|--issue-number)
+      AGENT_ISSUE_NUMBER=${2:-}; shift 2 ;;
+    --agent-label)
+      agent_label_override=${2:-}; shift 2 ;;
+    --ttl-seconds)
+      AGENT_TTL_SECONDS=${2:-}; shift 2 ;;
+    --branch)
+      branch_override=${2:-}; shift 2 ;;
+    --notes)
+      notes=${2:-}; shift 2 ;;
+    --*)
+      agent_fail "Unknown option: $1" 2 '{}' ;;
+    *)
+      if [[ -z "$AGENT_ISSUE_NUMBER" ]]; then AGENT_ISSUE_NUMBER=$1; shift; else agent_fail "Unexpected argument: $1" 2 '{}'; fi ;;
+  esac
+done
+export AGENT_ISSUE_NUMBER AGENT_TTL_SECONDS
+
+repo=$(agent_repo)
+issue_number=$(agent_issue_number)
+ttl_seconds=$(agent_ttl_seconds)
+agent_id=$(agent_identity_id)
+default_agent_label=$(agent_identity_label)
+agent_label=${agent_label_override:-$default_agent_label}
+
+issue=$(agent_fetch_issue "$repo" "$issue_number")
+state=$(jq -r '.state // empty' <<<"$issue")
+if [[ "$state" != "open" ]] || agent_issue_has_pull_request <<<"$issue"; then
+  agent_fail 'Issue is not eligible for claim.' 4 "{\"issue\":$issue_number}"
+fi
+
+comments=$(agent_fetch_comments "$repo" "$issue_number")
+events=$(printf '%s' "$comments" | agent_collect_events)
+winning_run_id=$(printf '%s' "$events" | agent_active_claim_run_id)
+if [[ -n "$winning_run_id" ]]; then
+  agent_fail 'Issue already has an active claim.' 5 "$(jq -n --argjson issue "$issue_number" --arg run_id "$winning_run_id" '{issue:$issue,run_id:$run_id}')"
+fi
+
+claimed_at=$(agent_now)
+lease_expires_at=$(CLAIMED_AT="$claimed_at" TTL_SECONDS="$ttl_seconds" python3 - <<'PY'
+from datetime import datetime, timezone, timedelta
+import os
+dt = datetime.strptime(os.environ['CLAIMED_AT'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+print((dt + timedelta(seconds=int(os.environ['TTL_SECONDS']))).strftime('%Y-%m-%dT%H:%M:%SZ'))
+PY
+)
+run_id=$(agent_run_id)
+title=$(jq -r '.title // "issue"' <<<"$issue")
+branch=${branch_override:-$(agent_branch_name "$issue_number" "$title")}
+payload=$(jq -n \
+  --arg repo "$repo" \
+  --argjson issue "$issue_number" \
+  --arg agent_id "$agent_id" \
+  --arg agent_label "$agent_label" \
+  --arg run_id "$run_id" \
+  --arg claimed_at "$claimed_at" \
+  --arg lease_expires_at "$lease_expires_at" \
+  --arg branch "$branch" \
+  --arg notes "$notes" \
+  '{version:1,type:"claim",repo:$repo,issue:$issue,agent_id:$agent_id,agent_label:$agent_label,run_id:$run_id,claimed_at:$claimed_at,lease_expires_at:$lease_expires_at,branch:$branch,status:"active",capabilities:["code","tests"],notes:$notes}')
+comment=$(agent_post_comment "$repo" "$issue_number" "$(agent_json_block "$payload")")
+labels=$(jq -c --arg claimed "$LABEL_CLAIMED" --arg ready "$LABEL_READY" --arg blocked "$LABEL_BLOCKED" --arg merged "$LABEL_MERGED" '
+  [.labels[]? | if type=="string" then . else .name end]
+  + [$claimed]
+  | unique
+  | map(select(. != $ready and . != $blocked and . != $merged))
+' <<<"$issue")
+agent_set_labels "$repo" "$issue_number" "$labels" >/dev/null
+
+comments=$(agent_fetch_comments "$repo" "$issue_number")
+events=$(printf '%s' "$comments" | agent_collect_events)
+winning_run_id=$(printf '%s' "$events" | agent_active_claim_run_id)
+if [[ "$winning_run_id" != "$run_id" ]]; then
+  release_payload=$(jq -n --arg repo "$repo" --argjson issue "$issue_number" --arg agent_id "$agent_id" --arg agent_label "$agent_label" --arg run_id "$run_id" --arg released_at "$(agent_now)" '{version:1,type:"release",repo:$repo,issue:$issue,agent_id:$agent_id,agent_label:$agent_label,run_id:$run_id,released_at:$released_at,status:"superseded",reason:"Lost claim race during verification"}')
+  agent_post_comment "$repo" "$issue_number" "$(agent_json_block "$release_payload")" >/dev/null
+  agent_remove_label "$repo" "$issue_number" "$LABEL_CLAIMED"
+  agent_fail 'Lost claim race during verification.' 6 "$(jq -n --argjson issue "$issue_number" --arg run_id "$run_id" '{issue:$issue,run_id:$run_id}')"
+fi
+
+jq -n --argjson issue "$issue_number" --arg agent_id "$agent_id" --arg agent_label "$agent_label" --arg run_id "$run_id" --argjson comment_id "$(jq -r '.id // 0' <<<"$comment")" --arg branch "$branch" --arg claimed_at "$claimed_at" --arg lease_expires_at "$lease_expires_at" '{ok:true,issue:$issue,agent_id:$agent_id,agent_label:$agent_label,run_id:$run_id,comment_id:$comment_id,branch:$branch,claimed_at:$claimed_at,lease_expires_at:$lease_expires_at}'
