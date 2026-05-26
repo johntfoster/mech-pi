@@ -73,255 +73,38 @@ function mechRuntimeEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 const MECH_RAG_SESSION_ENTRY = "mech-pi-rag";
 
-type MechPaneState = { sessions: string[]; activeIndex: number; defaultRagEnabled?: boolean };
+type PersistedMechRagDefault = { defaultEnabled?: unknown; enabled?: unknown };
 
-type PersistedMechPaneState = {
-  version?: number;
-  sessions?: unknown;
-  activeIndex?: unknown;
-  defaultRagEnabled?: unknown;
-};
+let pmuxShortcutsAvailable = false;
 
-type ExternalPiPane = { id?: unknown; order?: unknown; sessionFile?: unknown; cwd?: unknown };
-type ExternalPiPaneStore = { panes?: unknown; activeId?: unknown };
-type MechPaneShortcutCommandPrefix = "mechpane" | "pmux" | "pi-pane";
-
-let mechPaneShortcutCommandPrefix: MechPaneShortcutCommandPrefix = "mechpane";
-
-function paneShortcutOverride(): MechPaneShortcutCommandPrefix | undefined {
-  const raw = (mechEnv("MECHPI_PANE_SHORTCUTS") ?? mechEnv("MECHPI_PANE_BACKEND") ?? "").trim().toLowerCase();
-  if (["pmux", "kitty"].includes(raw)) return "pmux";
-  if (["pi-pane", "pipane", "pi"].includes(raw)) return "pi-pane";
-  if (["mechpane", "mech-pi", "mechpi", "logical"].includes(raw)) return "mechpane";
-  return undefined;
+function pmuxShortcutCommand(ch: string | undefined): string {
+  if (ch === "c") return "/pmux-new";
+  if (ch === "n") return "/pmux-next";
+  if (ch === "p") return "/pmux-prev";
+  return /^[1-9]$/.test(ch ?? "") ? `/pmux-select ${ch}` : "";
 }
 
-function nativePmuxEnvironment(): boolean {
-  const backend = (mechEnv("PMUX_BACKEND") ?? "").trim().toLowerCase();
-  if (backend === "kitty") return true;
-  // pmux controls native Kitty tabs.  When pi is running inside tmux, KITTY_WINDOW_ID
-  // is usually inherited from the outer terminal but pmux hotkeys should not steal the
-  // tmux-like mech-pi pane shortcuts unless the user explicitly opts in above.
-  return Boolean(mechEnv("KITTY_WINDOW_ID")) && !mechEnv("TMUX");
+function mechRagDefaultPath(cwd: string): string {
+  return path.join(path.resolve(cwd), ".mechpi", "rag.json");
 }
 
-function chooseMechPaneShortcutPrefix(commandNames: Set<string>): MechPaneShortcutCommandPrefix {
-  const hasPmux = commandNames.has("pmux-select") && commandNames.has("pmux-new");
-  const hasPiPane = commandNames.has("pi-pane-select") && commandNames.has("pi-pane-new");
-  const override = paneShortcutOverride();
-  if (override === "pmux") return hasPmux ? "pmux" : hasPiPane ? "pi-pane" : "mechpane";
-  if (override === "pi-pane") return hasPiPane ? "pi-pane" : "mechpane";
-  if (override === "mechpane") return "mechpane";
-  if (hasPmux && nativePmuxEnvironment()) return "pmux";
-  return hasPiPane ? "pi-pane" : "mechpane";
-}
-
-function shouldUsePmuxExternalStore(): boolean {
-  const override = paneShortcutOverride();
-  if (override === "pmux") return true;
-  if (override === "mechpane" || override === "pi-pane") return false;
-  return nativePmuxEnvironment();
-}
-
-const globalMechPaneGroups: Map<string, MechPaneState> = (() => {
-  const g = globalThis as typeof globalThis & { __mechPiPaneGroups?: Map<string, MechPaneState> };
-  if (!g.__mechPiPaneGroups) g.__mechPiPaneGroups = new Map<string, MechPaneState>();
-  return g.__mechPiPaneGroups;
-})();
-
-function mechPaneGroupKey(cwd: string): string { return path.resolve(cwd); }
-
-function mechPaneStatePath(cwd: string): string { return path.join(mechPaneGroupKey(cwd), ".mechpi", "panes.json"); }
-
-function normalizeMechPaneSessions(value: unknown): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  if (!Array.isArray(value)) return out;
-  for (const item of value) {
-    if (typeof item !== "string" || !item.trim()) continue;
-    const normalized = path.resolve(item);
-    if (seen.has(normalized) || !fss.existsSync(normalized)) continue;
-    seen.add(normalized);
-    out.push(normalized);
-  }
-  return out;
-}
-
-function defaultMechPaneState(cwd: string): MechPaneState {
-  const key = mechPaneGroupKey(cwd);
-  return { sessions: [], activeIndex: -1, defaultRagEnabled: fss.existsSync(mechIngestStorePath(key)) };
-}
-
-function externalPiPaneStore(): ExternalPiPaneStore | undefined {
-  const g = globalThis as typeof globalThis & { __pmuxExtensionStore_v1?: ExternalPiPaneStore; __piTmuxPanesExtensionStore_v1?: ExternalPiPaneStore };
-  const store = (shouldUsePmuxExternalStore() ? g.__pmuxExtensionStore_v1 : undefined) ?? g.__piTmuxPanesExtensionStore_v1;
-  return store && Array.isArray(store.panes) ? store : undefined;
-}
-
-function externalPiPaneSessions(cwd: string): { sessions: string[]; activeIndex: number } | null {
-  const store = externalPiPaneStore();
-  if (!store || !Array.isArray(store.panes)) return null;
-  const panes = (store.panes as ExternalPiPane[])
-    .slice()
-    .sort((a, b) => (typeof a.order === "number" ? a.order : 0) - (typeof b.order === "number" ? b.order : 0));
-  const sessions: string[] = [];
-  let activeIndex = -1;
-  for (const pane of panes) {
-    if (typeof pane.cwd === "string" && path.resolve(pane.cwd) !== mechPaneGroupKey(cwd)) continue;
-    if (typeof pane.sessionFile !== "string" || pane.sessionFile.startsWith("memory:")) continue;
-    const file = path.resolve(pane.sessionFile);
-    if (!fss.existsSync(file) || sessions.includes(file)) continue;
-    if (pane.id === store.activeId) activeIndex = sessions.length;
-    sessions.push(file);
-  }
-  if (sessions.length === 0) return null;
-  if (activeIndex < 0) activeIndex = 0;
-  return { sessions, activeIndex };
-}
-
-function syncMechPaneStateFromExternal(cwd: string): boolean {
-  const external = externalPiPaneSessions(cwd);
-  if (!external) return false;
-  const state = mechPaneState(cwd);
-  const before = `${state.activeIndex}\n${state.sessions.join("\n")}`;
-  state.sessions = external.sessions;
-  state.activeIndex = external.activeIndex;
-  const after = `${state.activeIndex}\n${state.sessions.join("\n")}`;
-  if (before !== after) saveMechPaneState(cwd, state);
-  return true;
-}
-
-function sanitizeMechPaneState(cwd: string, state: MechPaneState): MechPaneState {
-  state.sessions = normalizeMechPaneSessions(state.sessions);
-  if (state.sessions.length === 0) state.activeIndex = -1;
-  else if (!Number.isInteger(state.activeIndex) || state.activeIndex < 0) state.activeIndex = 0;
-  else if (state.activeIndex >= state.sessions.length) state.activeIndex = state.sessions.length - 1;
-  if (state.defaultRagEnabled === undefined) state.defaultRagEnabled = defaultMechPaneState(cwd).defaultRagEnabled;
-  return state;
-}
-
-function loadMechPaneState(cwd: string): MechPaneState {
-  const fallback = defaultMechPaneState(cwd);
+function mechRagDefaultEnabled(cwd: string): boolean {
   try {
-    const parsed = JSON.parse(fss.readFileSync(mechPaneStatePath(cwd), "utf8")) as PersistedMechPaneState;
-    return sanitizeMechPaneState(cwd, {
-      sessions: normalizeMechPaneSessions(parsed.sessions),
-      activeIndex: typeof parsed.activeIndex === "number" ? Math.trunc(parsed.activeIndex) : -1,
-      defaultRagEnabled: typeof parsed.defaultRagEnabled === "boolean" ? parsed.defaultRagEnabled : fallback.defaultRagEnabled,
-    });
-  } catch {
-    return fallback;
-  }
+    const parsed = JSON.parse(fss.readFileSync(mechRagDefaultPath(cwd), "utf8")) as PersistedMechRagDefault;
+    if (typeof parsed.defaultEnabled === "boolean") return parsed.defaultEnabled;
+    if (typeof parsed.enabled === "boolean") return parsed.enabled;
+  } catch {}
+  return fss.existsSync(mechIngestStorePath(path.resolve(cwd)));
 }
 
-function saveMechPaneState(cwd: string, state: MechPaneState): void {
+function setMechRagDefault(cwd: string, enabled: boolean): void {
   try {
-    const clean = sanitizeMechPaneState(cwd, state);
-    const file = mechPaneStatePath(cwd);
+    const file = mechRagDefaultPath(cwd);
     fss.mkdirSync(path.dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
-    fss.writeFileSync(tmp, JSON.stringify({ version: 1, ...clean, updatedAt: new Date().toISOString() }, null, 2));
+    fss.writeFileSync(tmp, JSON.stringify({ version: 1, defaultEnabled: enabled, updatedAt: new Date().toISOString() }, null, 2));
     fss.renameSync(tmp, file);
   } catch {}
-}
-
-function sessionParentChain(sessionFile: string | undefined | null): string[] {
-  if (!sessionFile) return [];
-  const chain: string[] = [];
-  const seen = new Set<string>();
-  let current: string | undefined = path.resolve(sessionFile);
-  while (current && fss.existsSync(current) && !seen.has(current)) {
-    seen.add(current);
-    chain.unshift(current);
-    try {
-      const firstLine = fss.readFileSync(current, "utf8").split(/\r?\n/, 1)[0] ?? "";
-      const header = JSON.parse(firstLine) as { parentSession?: unknown };
-      const parent = typeof header.parentSession === "string" && header.parentSession.trim() ? header.parentSession : undefined;
-      current = parent ? (path.isAbsolute(parent) ? parent : path.resolve(path.dirname(current), parent)) : undefined;
-    } catch {
-      break;
-    }
-  }
-  return chain;
-}
-
-function mechPaneState(cwd: string): MechPaneState {
-  const key = mechPaneGroupKey(cwd);
-  let state = globalMechPaneGroups.get(key);
-  if (!state) {
-    state = loadMechPaneState(key);
-    globalMechPaneGroups.set(key, state);
-  }
-  return state;
-}
-
-function mechPaneDefaultRagEnabled(cwd: string): boolean {
-  return mechPaneState(cwd).defaultRagEnabled === true;
-}
-
-function setMechPaneDefaultRag(cwd: string, enabled: boolean): void {
-  const state = mechPaneState(cwd);
-  state.defaultRagEnabled = enabled;
-  saveMechPaneState(cwd, state);
-}
-
-function rememberMechPaneSession(cwd: string, sessionFile?: string | null): void {
-  if (!sessionFile) return;
-  if (syncMechPaneStateFromExternal(cwd)) return;
-  const state = mechPaneState(cwd);
-  const normalized = path.resolve(sessionFile);
-  state.sessions = state.sessions.filter(file => fss.existsSync(file));
-  for (const file of sessionParentChain(normalized)) if (!state.sessions.includes(file)) state.sessions.push(file);
-  const existingIndex = state.sessions.indexOf(normalized);
-  if (existingIndex >= 0) state.activeIndex = existingIndex;
-  else {
-    state.sessions.push(normalized);
-    state.activeIndex = state.sessions.length - 1;
-  }
-  saveMechPaneState(cwd, state);
-}
-
-function availableMechPaneSessions(cwd: string): string[] {
-  syncMechPaneStateFromExternal(cwd);
-  const state = mechPaneState(cwd);
-  const beforeSessions = state.sessions.join("\n");
-  const beforeActive = state.activeIndex;
-  state.sessions = state.sessions.filter(file => fss.existsSync(file));
-  if (state.activeIndex >= state.sessions.length) state.activeIndex = state.sessions.length - 1;
-  if (state.sessions.length === 0) state.activeIndex = -1;
-  if (beforeSessions !== state.sessions.join("\n") || beforeActive !== state.activeIndex) saveMechPaneState(cwd, state);
-  return state.sessions;
-}
-
-function mechPaneActiveIndex(cwd: string): number { return mechPaneState(cwd).activeIndex; }
-
-function nextMechPaneSession(cwd: string, currentFile: string | undefined | null, delta: 1 | -1): string | null {
-  rememberMechPaneSession(cwd, currentFile);
-  const state = mechPaneState(cwd);
-  const sessions = availableMechPaneSessions(cwd);
-  if (sessions.length < 2) return null;
-  const current = currentFile ? path.resolve(currentFile) : sessions[state.activeIndex] ?? sessions[0];
-  const currentIndex = Math.max(0, sessions.indexOf(current));
-  const nextIndex = (currentIndex + delta + sessions.length) % sessions.length;
-  state.activeIndex = nextIndex;
-  saveMechPaneState(cwd, state);
-  return sessions[nextIndex] ?? null;
-}
-
-function numberedMechPaneSession(cwd: string, currentFile: string | undefined | null, paneNumber: number): string | null {
-  rememberMechPaneSession(cwd, currentFile);
-  const state = mechPaneState(cwd);
-  const sessions = availableMechPaneSessions(cwd);
-  if (!Number.isInteger(paneNumber) || paneNumber < 1 || paneNumber > sessions.length) return null;
-  state.activeIndex = paneNumber - 1;
-  saveMechPaneState(cwd, state);
-  return sessions[state.activeIndex] ?? null;
-}
-
-function mechPaneLabel(cwd: string): string {
-  const sessions = availableMechPaneSessions(cwd);
-  if (!sessions.length) return "pane 0/0";
-  return `pane ${Math.max(0, mechPaneActiveIndex(cwd)) + 1}/${sessions.length}`;
 }
 
 function envDisablesMechRag(): boolean {
