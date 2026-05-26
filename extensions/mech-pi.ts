@@ -7299,60 +7299,6 @@ async function runMechCompileCommand(args: string, ctx: ExtensionContext): Promi
 let activePromptEditor: MechPiModalPromptEditor | null = null;
 let activeVoice: VoiceInputController | null = null;
 
-async function handleMechPaneCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
-  const cmd = args.trim().toLowerCase() || "status";
-  const current = ctx.sessionManager.getSessionFile();
-  rememberMechPaneSession(ctx.cwd, current);
-  if (cmd === "status" || cmd === "list") {
-    const sessions = availableMechPaneSessions(ctx.cwd);
-    const activeIndex = mechPaneActiveIndex(ctx.cwd);
-    const ragDefault = mechPaneDefaultRagEnabled(ctx.cwd) ? "on" : "off";
-    ctx.ui.notify(`mech-pi panes: ${mechPaneLabel(ctx.cwd)} (new-pane /mechrag default: ${ragDefault})${sessions.length ? `\n${sessions.map((file, i) => `${i === activeIndex ? "*" : " "} ${i + 1}. ${file}`).join("\n")}` : ""}`, "info");
-    return;
-  }
-  const paneNumber = /^\d+$/.test(cmd) ? Number.parseInt(cmd, 10) : NaN;
-  if (Number.isInteger(paneNumber)) {
-    const target = numberedMechPaneSession(ctx.cwd, current, paneNumber);
-    if (!target) { ctx.ui.notify(`No mech-pi pane ${paneNumber}. Use Ctrl-a c to create panes.`, "warning"); return; }
-    if (current && path.resolve(current) === path.resolve(target)) { ctx.ui.notify(`Already at ${mechPaneLabel(ctx.cwd)}`, "info"); return; }
-    const result = await ctx.switchSession(target, {
-      withSession: async (nextCtx) => {
-        rememberMechPaneSession(nextCtx.cwd, nextCtx.sessionManager.getSessionFile());
-        nextCtx.ui.notify(`Switched to ${mechPaneLabel(nextCtx.cwd)}`, "info");
-      },
-    });
-    if (result.cancelled) ctx.ui.notify("Pane switch cancelled", "info");
-    return;
-  }
-  if (cmd === "new" || cmd === "c" || cmd === "create") {
-    const parentSession = current ?? undefined;
-    const defaultRag = mechPaneDefaultRagEnabled(ctx.cwd);
-    const result = await ctx.newSession({
-      parentSession,
-      setup: async (sm) => { appendMechRagMode(sm, defaultRag, defaultRag ? "/mechrag on (pane default)" : "/mechrag off (pane default)"); },
-      withSession: async (nextCtx) => {
-        rememberMechPaneSession(nextCtx.cwd, nextCtx.sessionManager.getSessionFile());
-        nextCtx.ui.notify(`Created ${mechPaneLabel(nextCtx.cwd)} with /mechrag ${defaultRag ? "on" : "off"} (Ctrl-a n/p switches panes; Ctrl-a 1..9 jumps directly)`, "info");
-      },
-    });
-    if (result.cancelled) ctx.ui.notify("New pane cancelled", "info");
-    return;
-  }
-  if (cmd === "next" || cmd === "n" || cmd === "prev" || cmd === "previous" || cmd === "p") {
-    const target = nextMechPaneSession(ctx.cwd, current, cmd === "prev" || cmd === "previous" || cmd === "p" ? -1 : 1);
-    if (!target) { ctx.ui.notify("No other mech-pi pane yet. Use Ctrl-a c to create one.", "info"); return; }
-    const result = await ctx.switchSession(target, {
-      withSession: async (nextCtx) => {
-        rememberMechPaneSession(nextCtx.cwd, nextCtx.sessionManager.getSessionFile());
-        nextCtx.ui.notify(`Switched to ${mechPaneLabel(nextCtx.cwd)}`, "info");
-      },
-    });
-    if (result.cancelled) ctx.ui.notify("Pane switch cancelled", "info");
-    return;
-  }
-  ctx.ui.notify("Usage: /mechpane [new|next|prev|status|<number>]", "warning");
-}
-
 function handleMechRagModeCommand(pi: ExtensionAPI, args: string, ctx: ExtensionCommandContext): boolean {
   const cmd = args.trim().toLowerCase();
   if (!cmd || !["status", "on", "off"].includes(cmd)) return false;
